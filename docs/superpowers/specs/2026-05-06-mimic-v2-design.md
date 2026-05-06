@@ -398,12 +398,31 @@ All chart text uses DS text styles. All chart fills use DS color variables. No e
 
 ### Phase 4 — QA
 
-- Screenshot and compare with HTML
-- Content fidelity check: all text matches HTML exactly
-- Plugin enforcement gate already validated Tier 1-2 compliance during build
-- Check for: placeholder text in components, visible placeholder icons, nodes outside artboard
-- Issues → edit existing artboard to fix (do not rebuild)
-- Max one fix pass — if issues persist, report them honestly
+No screenshots. LLM visual comparison was unreliable in v1 — it said "looks good" when charts were missing and layout was wrong. Replace with deterministic checks:
+
+**1. Section checklist** (primary QA gate):
+- Phase 1 produces a section inventory from the HTML (header, hero, metrics row, table, chart, footer, etc.)
+- Walk the artboard's children and check each section off
+- Missing section = build failure → fix before proceeding
+- Extra section = something was invented → remove it
+
+**2. Content audit:**
+- Extract all text content from the built artboard (recursive traversal)
+- Compare against all text content from the HTML source
+- Missing text = missing element. Extra text = placeholder leak or invention.
+- Every text mismatch is a defect
+
+**3. Structural validation:**
+- Component count: inserted vs mapped in Phase 1 (if Phase 1 mapped 6 components and only 4 were inserted, 2 were missed)
+- DS compliance: every text node has DS text style + color variable, every fill has DS color variable (already enforced by plugin gate, but verify the count)
+- Layout: no nodes outside the content container, all frames use auto-layout
+- Placeholder check: no default component text remains ("Button", "Label", etc.)
+
+**4. Fix pass:**
+- Issues found → edit existing artboard to fix (do not rebuild)
+- Max one fix pass — if issues persist after one pass, report them honestly
+
+Screenshots remain available as a tool (`get_screenshot`) for users to request manually, but they are not part of the automated QA phase.
 
 ### Phase 5 — Report & Learn
 
