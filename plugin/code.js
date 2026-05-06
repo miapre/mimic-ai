@@ -427,13 +427,15 @@ handlers.create_text = async function (payload) {
   enforceColorFill(payload, 'TEXT');
 
   var parent = getParent(payload.parentId);
-  var text = figma.createText();
-  text.name = payload.name || 'Text';
 
-  // Load font — MUST await before setting characters
+  // Load font BEFORE creating text node — some Figma versions
+  // require the font loaded even for the initial empty text
   var fontFamily = payload.fontFamily || 'Inter';
   var fontStyle = payload.fontStyle || 'Regular';
   await figma.loadFontAsync({ family: fontFamily, style: fontStyle });
+
+  var text = figma.createText();
+  text.name = payload.name || 'Text';
 
   // Apply text style if provided
   if (payload.textStyleId) {
