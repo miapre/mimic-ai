@@ -80,6 +80,9 @@ require('./src/tools/components').register(server, context);
 require('./src/tools/edit').register(server, context);
 require('./src/tools/inspect').register(server, context);
 require('./src/tools/batch').register(server, context);
+require('./src/tools/learning').register(server, context);
+require('./src/tools/compliance').register(server, context);
+require('./src/tools/rendering').register(server, context);
 
 // ── MCP Request Handlers ──────────────────────────────────────────────
 
