@@ -335,7 +335,9 @@ Gaps accumulate evidence across builds. The build report surfaces them ranked by
 ### Phase 0 — Target
 
 - User specifies target: file, page, or section
-- Confirm location, start bridge if not running
+- **Check plugin connection.** The bridge is embedded in the MCP server and always running. But the Figma plugin must be started manually by the user (Plugins → Development → Mimic AI → Run). If the plugin is not connected, **stop and guide the user:**
+  > "The Figma plugin isn't connected. Open your Figma file, go to Plugins → Development → Mimic AI → Run. I'll wait."
+  Do not proceed until the plugin responds. Do not retry silently.
 - Scan target for existing artboards → calculate placement (rightmost.x + width + 80px, or x:0 if empty)
 - Detect HTML color scheme (dark/light) → set variable mode on artboard after creation
 - Load knowledge store
@@ -580,17 +582,23 @@ Hard-won reference from v1. Correct and complete.
 
 ## 11. Voice & Tone
 
-Carried from v1 in full. See `docs/v1-VOICE_AND_TONE.md` for the complete reference.
+Carried from v1 in full. See `docs/v1-VOICE_AND_TONE.md` for the complete reference. Research backing: `internal/research/voice-and-tone.md`.
+
+**The audience is designers**, not developers. Every message, error, report, and recommendation must be written for someone who maintains a design system — precise, professional, no filler.
 
 **Summary:**
-- Precise — uses designer vocabulary
-- Transparent — named, specific, falsifiable status messages
-- Honest — states what failed, not feelings
+- Precise — uses designer vocabulary (token, variant, spec, spacing scale, semantic role)
+- Transparent — named, specific, falsifiable status messages. "Scanning 237 published components" not "Loading..."
+- Honest — states what failed, not feelings. "Couldn't import Badge (key: abc123). Built as primitive." not "Oops!"
 - Respectful of craft — treats every DS token as intentional
 - No filler — no "Great question!", no emojis, no narration of process
 - Categorical confidence — Strong/Moderate/New/Weak, never percentages
-- Recommendations as questions — "Should your DS include X?" with evidence
+- Recommendations as questions — "Should your DS include X?" with evidence and savings estimate
 - Build reports answer: what was built, what was used, what was learned, what's missing
+
+**Voice is embedded in tool responses, not just documentation.** MCP progress notifications are broken in most clients (Claude Code, Cursor, Cline all drop or mangle them). The only reliable channel is the tool result itself. Every tool response must carry status in the voice & tone style — specific counts, named operations, actionable next steps. The CLAUDE.md tells the LLM to relay these to the user as-is.
+
+**The copy test:** Would a senior DS lead keep reading, or close the tab after the third emoji?
 
 ---
 
