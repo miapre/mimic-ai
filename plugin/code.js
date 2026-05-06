@@ -421,87 +421,76 @@ handlers.create_frame = function (payload) {
   };
 };
 
-handlers.create_text = function (payload) {
+handlers.create_text = async function (payload) {
   // Enforcement gates
   enforceText(payload);
   enforceColorFill(payload, 'TEXT');
 
   var parent = getParent(payload.parentId);
   var text = figma.createText();
-
   text.name = payload.name || 'Text';
 
-  // Font loading + content setting must be async
+  // Load font — MUST await before setting characters
   var fontFamily = payload.fontFamily || 'Inter';
   var fontStyle = payload.fontStyle || 'Regular';
+  await figma.loadFontAsync({ family: fontFamily, style: fontStyle });
 
-  // Return a promise so the dispatcher waits for font loading
-  return figma.loadFontAsync({ family: fontFamily, style: fontStyle }).then(function () {
-    // Apply text style if provided
-    if (payload.textStyleId) {
-      try {
-        var style = styleCache.get(payload.textStyleId) || figma.getStyleById(payload.textStyleId);
-        if (style && style.type === 'TEXT') {
-          text.textStyleId = style.id;
-        }
-      } catch (e) {
-        // Style not available — font already loaded as fallback
-      }
-    }
-
-    // Set content (font is now loaded)
-    if (payload.characters || payload.content) {
-      text.characters = payload.characters || payload.content || '';
-    }
-
-  // Typography variable bindings (fontSize, lineHeight, letterSpacing)
-    // Typography variable bindings
-    if (payload.fontSizeVariable) bindVariable(text, 'fontSize', payload.fontSizeVariable);
-    if (payload.lineHeightVariable) bindVariable(text, 'lineHeight', payload.lineHeightVariable);
-    if (payload.letterSpacingVariable) bindVariable(text, 'letterSpacing', payload.letterSpacingVariable);
-
-    // Fill (text color)
-    if (payload.fillVariable) {
-      bindFillVariable(text, payload.fillVariable);
-    } else if (payload.fill) {
-      applySolidFill(text, payload.fill);
-    }
-
-    // Sizing — only set if text will be inside an auto-layout parent
-    // (setting before appendChild to a non-AL parent throws)
-    // Defer to after appendChild, or only set if explicitly requested
-    var deferSizingH = payload.layoutSizingHorizontal;
-    var deferSizingV = payload.layoutSizingVertical;
-
-    // Text auto-resize
-    if (payload.textAutoResize) text.textAutoResize = payload.textAutoResize;
-
-    // Truncation
-    if (payload.textTruncation) text.textTruncation = payload.textTruncation;
-    if (typeof payload.maxLines === 'number') text.maxLines = payload.maxLines;
-
-    // Alignment
-    if (payload.textAlignHorizontal) text.textAlignHorizontal = payload.textAlignHorizontal;
-    if (payload.textAlignVertical) text.textAlignVertical = payload.textAlignVertical;
-
-    // Append to parent
-    parent.appendChild(text);
-
-    // Apply sizing after appending (requires auto-layout parent)
+  // Apply text style if provided
+  if (payload.textStyleId) {
     try {
-      if (deferSizingH) text.layoutSizingHorizontal = deferSizingH;
-      if (deferSizingV) text.layoutSizingVertical = deferSizingV;
-    } catch (e) {
-      // Parent isn't auto-layout — sizing not applicable, ignore
-    }
+      var style = styleCache.get(payload.textStyleId) || figma.getStyleById(payload.textStyleId);
+      if (style && style.type === 'TEXT') {
+        text.textStyleId = style.id;
+      }
+    } catch (e) { /* Style not available */ }
+  }
 
-    return {
-      nodeId: text.id,
-      name: text.name,
-      type: 'TEXT',
-      characters: text.characters,
-    };
-  });
+  // Set content (font is loaded)
+  if (payload.characters || payload.content) {
+    text.characters = payload.characters || payload.content || '';
+  }
+
+  // Font size (raw, when no DS text styles)
+  if (payload.fontSize && !payload.textStyleId) text.fontSize = payload.fontSize;
+
+  // Typography variable bindings
+  if (payload.fontSizeVariable) bindVariable(text, 'fontSize', payload.fontSizeVariable);
+  if (payload.lineHeightVariable) bindVariable(text, 'lineHeight', payload.lineHeightVariable);
+  if (payload.letterSpacingVariable) bindVariable(text, 'letterSpacing', payload.letterSpacingVariable);
+
+  // Fill (text color)
+  if (payload.fillVariable) {
+    bindFillVariable(text, payload.fillVariable);
+  } else if (payload.fill) {
+    applySolidFill(text, payload.fill);
+  }
+
+  // Text auto-resize
+  if (payload.textAutoResize) text.textAutoResize = payload.textAutoResize;
+
+  // Truncation
+  if (payload.textTruncation) text.textTruncation = payload.textTruncation;
+  if (typeof payload.maxLines === 'number') text.maxLines = payload.maxLines;
+
+  // Alignment
+  if (payload.textAlignHorizontal) text.textAlignHorizontal = payload.textAlignHorizontal;
+  if (payload.textAlignVertical) text.textAlignVertical = payload.textAlignVertical;
+
+  // Append to parent
+  parent.appendChild(text);
+
+  // Apply sizing after appending (requires auto-layout parent)
+  try {
+    if (payload.layoutSizingHorizontal) text.layoutSizingHorizontal = payload.layoutSizingHorizontal;
+    if (payload.layoutSizingVertical) text.layoutSizingVertical = payload.layoutSizingVertical;
+  } catch (e) { /* Parent isn't auto-layout */ }
+
+  return {
+    nodeId: text.id,
+    name: text.name,
+    type: 'TEXT',
+    characters: text.characters,
+  };
 };
 
 handlers.insert_component = function (payload) {
