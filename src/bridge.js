@@ -264,7 +264,9 @@ class Bridge {
     this.responseHandlers.delete(data.id);
 
     if (data.error) {
-      handler.reject(new Error(data.error));
+      const err = new Error(typeof data.error === 'string' ? data.error : data.error.message || JSON.stringify(data.error));
+      err.pluginError = data.error;
+      handler.reject(err);
     } else {
       handler.resolve(data.result ?? data);
     }

@@ -431,76 +431,67 @@ handlers.create_text = function (payload) {
 
   text.name = payload.name || 'Text';
 
-  // Apply text style if provided (must happen before setting content)
-  var styleApplied = false;
-  if (payload.textStyleId) {
-    try {
-      var style = styleCache.get(payload.textStyleId) || figma.getStyleById(payload.textStyleId);
-      if (style && style.type === 'TEXT') {
-        text.textStyleId = style.id;
-        styleApplied = true;
+  // Font loading + content setting must be async
+  var fontFamily = payload.fontFamily || 'Inter';
+  var fontStyle = payload.fontStyle || 'Regular';
+
+  // Return a promise so the dispatcher waits for font loading
+  return figma.loadFontAsync({ family: fontFamily, style: fontStyle }).then(function () {
+    // Apply text style if provided
+    if (payload.textStyleId) {
+      try {
+        var style = styleCache.get(payload.textStyleId) || figma.getStyleById(payload.textStyleId);
+        if (style && style.type === 'TEXT') {
+          text.textStyleId = style.id;
+        }
+      } catch (e) {
+        // Style not available — font already loaded as fallback
       }
-    } catch (e) {
-      // Style not available
     }
-  }
 
-  // If no text style, try loading font for manual typography
-  if (!styleApplied) {
-    // Load the font before setting characters
-    var fontFamily = payload.fontFamily || 'Inter';
-    var fontStyle = payload.fontStyle || 'Regular';
-    try {
-      figma.loadFontAsync({ family: fontFamily, style: fontStyle }).then(function () {
-        // Font loaded — this is async but we handle it synchronously in the plugin context
-      });
-    } catch (e) {
-      // If font loading fails, try Inter Regular as fallback
+    // Set content (font is now loaded)
+    if (payload.characters || payload.content) {
+      text.characters = payload.characters || payload.content || '';
     }
-  }
-
-  // Set content
-  if (payload.characters || payload.content) {
-    text.characters = payload.characters || payload.content || '';
-  }
 
   // Typography variable bindings (fontSize, lineHeight, letterSpacing)
-  if (payload.fontSizeVariable) bindVariable(text, 'fontSize', payload.fontSizeVariable);
-  if (payload.lineHeightVariable) bindVariable(text, 'lineHeight', payload.lineHeightVariable);
-  if (payload.letterSpacingVariable) bindVariable(text, 'letterSpacing', payload.letterSpacingVariable);
+    // Typography variable bindings
+    if (payload.fontSizeVariable) bindVariable(text, 'fontSize', payload.fontSizeVariable);
+    if (payload.lineHeightVariable) bindVariable(text, 'lineHeight', payload.lineHeightVariable);
+    if (payload.letterSpacingVariable) bindVariable(text, 'letterSpacing', payload.letterSpacingVariable);
 
-  // Fill (text color)
-  if (payload.fillVariable) {
-    bindFillVariable(text, payload.fillVariable);
-  } else if (payload.fill) {
-    applySolidFill(text, payload.fill);
-  }
+    // Fill (text color)
+    if (payload.fillVariable) {
+      bindFillVariable(text, payload.fillVariable);
+    } else if (payload.fill) {
+      applySolidFill(text, payload.fill);
+    }
 
-  // Sizing
-  text.layoutSizingHorizontal = payload.layoutSizingHorizontal || 'HUG';
-  text.layoutSizingVertical = payload.layoutSizingVertical || 'HUG';
+    // Sizing
+    text.layoutSizingHorizontal = payload.layoutSizingHorizontal || 'HUG';
+    text.layoutSizingVertical = payload.layoutSizingVertical || 'HUG';
 
-  // Text auto-resize
-  if (payload.textAutoResize) text.textAutoResize = payload.textAutoResize;
+    // Text auto-resize
+    if (payload.textAutoResize) text.textAutoResize = payload.textAutoResize;
 
-  // Truncation
-  if (payload.textTruncation) text.textTruncation = payload.textTruncation;
-  if (typeof payload.maxLines === 'number') text.maxLines = payload.maxLines;
+    // Truncation
+    if (payload.textTruncation) text.textTruncation = payload.textTruncation;
+    if (typeof payload.maxLines === 'number') text.maxLines = payload.maxLines;
 
-  // Alignment
-  if (payload.textAlignHorizontal) text.textAlignHorizontal = payload.textAlignHorizontal;
-  if (payload.textAlignVertical) text.textAlignVertical = payload.textAlignVertical;
+    // Alignment
+    if (payload.textAlignHorizontal) text.textAlignHorizontal = payload.textAlignHorizontal;
+    if (payload.textAlignVertical) text.textAlignVertical = payload.textAlignVertical;
 
-  // Append to parent
-  parent.appendChild(text);
+    // Append to parent
+    parent.appendChild(text);
 
-  return {
-    nodeId: text.id,
-    name: text.name,
-    type: 'TEXT',
-    characters: text.characters,
-    styleApplied: styleApplied,
-  };
+    return {
+      nodeId: text.id,
+      name: text.name,
+      type: 'TEXT',
+      characters: text.characters,
+    };
+  });
 };
 
 handlers.insert_component = function (payload) {
