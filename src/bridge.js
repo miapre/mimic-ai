@@ -7,13 +7,13 @@ const { WebSocketServer } = require('ws');
 class Bridge {
   /**
    * @param {object} opts
-   * @param {number} [opts.port=3055]
+   * @param {number} [opts.port=3056]
    * @param {number} [opts.keepaliveInterval=15000]
    * @param {number} [opts.maxReconnectAttempts=3]
    * @param {number} [opts.defaultTimeout=60000]
    */
   constructor(opts = {}) {
-    this.port = opts.port ?? 3055;
+    this.port = opts.port ?? 3056;
     this.keepaliveInterval = opts.keepaliveInterval ?? 15000;
     this.maxReconnectAttempts = opts.maxReconnectAttempts ?? 3;
     this.defaultTimeout = opts.defaultTimeout ?? 60000;
@@ -336,7 +336,7 @@ class Bridge {
 // ── Standalone entry point ────────────────────────────────────────────
 
 async function startStandalone() {
-  const bridge = new Bridge({ port: Number(process.env.BRIDGE_PORT) || 3055 });
+  const bridge = new Bridge({ port: Number(process.env.BRIDGE_PORT) || 3056 });
   await bridge.start();
   console.log(`Bridge listening on port ${bridge.port}`);
 

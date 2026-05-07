@@ -46,7 +46,7 @@ function registerTool(name, description, inputSchema, handler) {
 }
 
 // Shared instances
-const bridge = new Bridge({ port: 3055 });
+const bridge = new Bridge({ port: 3056 });
 const dsCache = new DsCache();
 const dsResolver = new DsResolver(dsCache);
 const knowledgeStore = new KnowledgeStore(
