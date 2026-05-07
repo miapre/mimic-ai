@@ -3,16 +3,16 @@
 const PHASE_HINT = 'Complete DS Discovery and Style Inventory first (call mimic_discover_ds → preload → figma_set_session_defaults).';
 
 function register(server, context) {
-  const { bridge, session, requirePhase, advancePhase, registerTool } = context;
+  const { bridge, buildManifest, session, requirePhase, advancePhase, registerTool } = context;
 
   // ── figma_create_frame ────────────────────────────────────────
   registerTool(
     'figma_create_frame',
-    'Creates an auto-layout frame in Figma. All sizing uses DS variables when available.',
+    'Creates an auto-layout frame in Figma. All sizing uses DS variables when available. The name parameter should describe the HTML section or element role (e.g., "Header Section", "Metrics Row", "Card: Revenue"). Meaningful names enable iteration.',
     {
       type: 'object',
       properties: {
-        name: { type: 'string', description: 'Frame name.' },
+        name: { type: 'string', description: 'Semantic name describing the HTML role (e.g., "Header Section", "Metrics Row", "Card: Revenue"). Never use generic names like "Frame".' },
         parentId: { type: 'string', description: 'Parent node ID. Omit for page-level.' },
         direction: { type: 'string', enum: ['HORIZONTAL', 'VERTICAL', 'NONE'], description: 'Auto-layout direction.' },
         width: { type: 'number', description: 'Fixed width in pixels.' },
@@ -41,8 +41,13 @@ function register(server, context) {
       const result = await bridge.send('create_frame', args);
       session.toolCallCount++;
       advancePhase(3);
+      const nodeId = result?.nodeId || result?.id;
+      // Record top-level sections (direct children of the artboard/content container)
+      if (nodeId && args.parentId) {
+        buildManifest.addSection(args.name || 'unnamed-frame', nodeId, 'frame');
+      }
       return {
-        nodeId: result?.nodeId || result?.id,
+        nodeId,
         ...result,
         hint: 'Frame created. Add children with figma_create_text, figma_create_frame, or figma_insert_component.',
       };
@@ -52,11 +57,11 @@ function register(server, context) {
   // ── figma_create_text ─────────────────────────────────────────
   registerTool(
     'figma_create_text',
-    'Creates a text node in Figma with DS text style and color variable.',
+    'Creates a text node in Figma with DS text style and color variable. The name parameter should describe the HTML element role (e.g., "Page Title", "Card: Revenue Label", "Subtitle"). Meaningful names enable iteration.',
     {
       type: 'object',
       properties: {
-        name: { type: 'string', description: 'Node name.' },
+        name: { type: 'string', description: 'Semantic name describing the HTML element role (e.g., "Page Title", "Card: Revenue Label", "Subtitle"). Never use generic names like "Text".' },
         parentId: { type: 'string', description: 'Parent node ID.' },
         content: { type: 'string', description: 'Text content.' },
         textStyleId: { type: 'string', description: 'DS text style key to apply.' },

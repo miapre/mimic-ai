@@ -15,11 +15,15 @@ function register(server, context) {
           items: { type: 'string' },
           description: 'Array of text style keys to preload.',
         },
+        expectedCount: {
+          type: 'number',
+          description: 'Total number of styles expected (from Figma MCP search results). Used to detect partial loads.',
+        },
       },
       required: ['styleKeys'],
     },
     async (args) => {
-      const result = await bridge.send('set_session_defaults', { textStyleKeys: args.styleKeys });
+      const result = await bridge.send('preload_styles', { styleKeys: args.styleKeys });
       session.toolCallCount++;
 
       // Cache the styles returned by the plugin
@@ -29,8 +33,17 @@ function register(server, context) {
         }
       }
 
+      const cached = result?.preloadedStyles || 0;
+      const expectedCount = args.expectedCount || null;
+      if (expectedCount) session.expectedStyleCount = expectedCount;
+      const warning = expectedCount && cached < expectedCount * 0.8
+        ? `Partial load: ${cached}/${expectedCount} styles cached. Some styles may be unavailable. Retry failed styles or proceed with available ones.`
+        : null;
+
       return {
-        cached: dsCache.textStyles.size,
+        cached,
+        expectedStyles: expectedCount,
+        warning,
         result,
         hint: 'Styles preloaded. Next: preload variables with figma_preload_variables.',
       };
@@ -58,6 +71,10 @@ function register(server, context) {
           },
           description: 'Array of variables to cache.',
         },
+        expectedCount: {
+          type: 'number',
+          description: 'Total number of variables expected (from Figma MCP search results). Used to detect partial loads.',
+        },
       },
       required: ['variables'],
     },
@@ -69,11 +86,24 @@ function register(server, context) {
           category: v.category || null,
         });
       }
+
+      // Send variable paths + keys to plugin for import
+      const variableEntries = args.variables.map(v => ({ path: v.path, key: v.key }));
+      const pluginResult = await bridge.send('preload_variables', { variables: variableEntries });
       session.toolCallCount++;
 
       const enforcement = dsCache.getEnforcementProfile();
+      const cached = dsCache.variables.size;
+      const expectedCount = args.expectedCount || null;
+      const warning = expectedCount && cached < expectedCount * 0.8
+        ? `Partial load: ${cached}/${expectedCount} variables cached. Some variables may be unavailable. Retry failed variables or proceed with available ones.`
+        : null;
+
       return {
-        cached: dsCache.variables.size,
+        cached,
+        expectedVariables: expectedCount,
+        warning,
+        pluginImported: pluginResult?.preloadedVars || 0,
         enforcement,
         hint: 'Variables cached. Next: call figma_set_session_defaults to finalize the enforcement profile and advance to phase 2.',
       };
@@ -110,7 +140,7 @@ function register(server, context) {
       session.enforcementProfile = { ...enforcement, dsMode };
 
       const result = await bridge.send('set_session_defaults', {
-        enforcement: session.enforcementProfile,
+        enforcementProfile: session.enforcementProfile,
       });
 
       advancePhase(2);
@@ -136,12 +166,17 @@ function register(server, context) {
         styles.push({ key, ...style });
       }
       session.toolCallCount++;
+      const totalExpected = session.expectedStyleCount || null;
       return {
         count: styles.length,
+        totalExpected,
+        partial: totalExpected ? styles.length < totalExpected * 0.8 : false,
         styles,
         hint: styles.length === 0
           ? 'No text styles cached. Call figma_preload_styles or figma_discover_library_styles first.'
-          : 'Use the style key in figma_create_text or figma_set_text_style.',
+          : totalExpected && styles.length < totalExpected * 0.8
+            ? `Partial list: ${styles.length}/${totalExpected} styles. Some styles failed to load.`
+            : 'Use the style key in figma_create_text or figma_set_text_style.',
       };
     }
   );

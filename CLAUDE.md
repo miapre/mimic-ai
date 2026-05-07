@@ -31,6 +31,9 @@ and what to do next.
 7. Feedback means iterate the existing artboard.
    Never delete artboards.
 8. Every build ends with a report. Not optional.
+9. Name every node after its HTML role. "Header Section" not
+   "Frame". "Card: Total Users" not "Frame". This enables
+   iteration — finding nodes by name instead of traversing.
 
 ## Tool Guidance
 
