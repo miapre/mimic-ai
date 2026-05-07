@@ -7,6 +7,7 @@ const { Bridge } = require('./src/bridge');
 const { DsCache } = require('./src/ds/cache');
 const { DsResolver } = require('./src/ds/resolver');
 const { KnowledgeStore } = require('./src/knowledge/store');
+const { BuildManifest } = require('./src/knowledge/manifest');
 const path = require('node:path');
 
 // Build session state
@@ -52,6 +53,7 @@ const dsResolver = new DsResolver(dsCache);
 const knowledgeStore = new KnowledgeStore(
   path.join(process.cwd(), 'ds-knowledge.json')
 );
+const buildManifest = new BuildManifest();
 
 // MCP Server
 const server = new Server(
@@ -65,6 +67,7 @@ const context = {
   dsCache,
   dsResolver,
   knowledgeStore,
+  buildManifest,
   session,
   requirePhase,
   advancePhase,

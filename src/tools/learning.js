@@ -5,7 +5,7 @@ const path = require('node:path');
 const { ChartCalculator } = require('../charts/calculator');
 
 function register(server, context) {
-  const { registerTool, knowledgeStore, dsCache, session, advancePhase } = context;
+  const { registerTool, knowledgeStore, buildManifest, dsCache, session, advancePhase } = context;
 
   // ── mimic_ai_knowledge_read ────────────────────────────────────
   registerTool(
@@ -202,6 +202,11 @@ function register(server, context) {
       const safeName = screenName.replace(/[^a-zA-Z0-9_-]/g, '-');
       const reportPath = path.join(reportsDir, `build-${date}-${safeName}.md`);
       fs.writeFileSync(reportPath, reportContent, 'utf-8');
+
+      // Save build manifest
+      const buildsDir = path.join(process.cwd(), 'mimic', 'builds');
+      if (!fs.existsSync(buildsDir)) fs.mkdirSync(buildsDir, { recursive: true });
+      buildManifest.save(path.join(buildsDir, 'last-build.json'));
 
       // Advance phase to 5 (report)
       advancePhase(5);

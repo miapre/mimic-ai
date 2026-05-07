@@ -1,7 +1,7 @@
 'use strict';
 
 function register(server, context) {
-  const { bridge, session, registerTool } = context;
+  const { bridge, buildManifest, session, registerTool } = context;
 
   // ── figma_get_node_props ──────────────────────────────────────
   registerTool(
@@ -164,6 +164,23 @@ function register(server, context) {
       const result = await bridge.send('select_node', args);
       session.toolCallCount++;
       return { ...result };
+    }
+  );
+  // ── mimic_find_node ────────────────────────────────────────
+  registerTool(
+    'mimic_find_node',
+    'Find a Figma node by its HTML section name from the last build. Returns the node ID and metadata if found, or lists available sections.',
+    {
+      type: 'object',
+      properties: {
+        sectionName: { type: 'string', description: 'The HTML section to find (e.g., "header", "metrics row", "table").' },
+      },
+      required: ['sectionName'],
+    },
+    async (args) => {
+      const match = buildManifest.findBySection(args.sectionName);
+      if (match) return { found: true, ...match };
+      return { found: false, available: buildManifest.sections.map(s => s.htmlSection) };
     }
   );
 }

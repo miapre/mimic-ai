@@ -3,7 +3,7 @@
 const PHASE_HINT = 'Complete DS Discovery and Style Inventory first (call mimic_discover_ds → preload → figma_set_session_defaults).';
 
 function register(server, context) {
-  const { bridge, dsCache, knowledgeStore, session, requirePhase, advancePhase, registerTool } = context;
+  const { bridge, buildManifest, dsCache, knowledgeStore, session, requirePhase, advancePhase, registerTool } = context;
 
   // ── figma_insert_component ────────────────────────────────────
   registerTool(
@@ -56,8 +56,19 @@ function register(server, context) {
       }
       hints.push('After inserting: override ALL text with figma_set_component_text, set semantic properties, configure icons, hide unused slots.');
 
+      const nodeId = result?.nodeId || result?.id;
+      // Record component in build manifest
+      if (nodeId) {
+        buildManifest.addSection(
+          args.name || result?.name || 'unnamed-component',
+          nodeId,
+          'component',
+          result?.name || args.name
+        );
+      }
+
       return {
-        nodeId: result?.nodeId || result?.id,
+        nodeId,
         ...result,
         hints,
       };
