@@ -1741,6 +1741,12 @@ handlers.figma_batch = function (payload) {
 
 figma.showUI(__html__, { width: 120, height: 28, position: { x: 0, y: 0 } });
 
+// Pre-warm font cache on startup — prevents cold-start font loading failures
+figma.loadFontAsync({ family: 'Inter', style: 'Regular' }).catch(function () {});
+figma.loadFontAsync({ family: 'Inter', style: 'Bold' }).catch(function () {});
+figma.loadFontAsync({ family: 'Inter', style: 'Semi Bold' }).catch(function () {});
+figma.loadFontAsync({ family: 'Inter', style: 'Medium' }).catch(function () {});
+
 figma.ui.onmessage = function (msg) {
   // Ignore internal bridge status messages
   if (msg.type === '__bridge_connected' || msg.type === '__bridge_disconnected') return;
