@@ -2,7 +2,7 @@ const { describe, it, beforeEach, afterEach } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');
 const path = require('node:path');
-const { KnowledgeStore } = require('../../src/knowledge/store');
+const { KnowledgeStore } = require('../../../src/knowledge/store');
 
 const TEST_PATH = path.join(__dirname, 'test-knowledge.json');
 

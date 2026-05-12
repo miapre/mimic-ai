@@ -1,7 +1,7 @@
 const { describe, it } = require('node:test');
 const assert = require('node:assert');
-const { DsResolver } = require('../../src/ds/resolver');
-const { DsCache } = require('../../src/ds/cache');
+const { DsResolver } = require('../../../src/ds/resolver');
+const { DsCache } = require('../../../src/ds/cache');
 
 describe('DsResolver', () => {
   it('resolves exact variable path', () => {

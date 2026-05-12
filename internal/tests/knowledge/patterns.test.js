@@ -1,6 +1,6 @@
 const { describe, it } = require('node:test');
 const assert = require('node:assert');
-const { PatternMatcher } = require('../../src/knowledge/patterns');
+const { PatternMatcher } = require('../../../src/knowledge/patterns');
 
 describe('PatternMatcher', () => {
   it('promotes pattern after 3 uncorrected builds', () => {

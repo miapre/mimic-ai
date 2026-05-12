@@ -1,7 +1,7 @@
 node_modules/
 ds-knowledge.json
 mimic/
-internal/builds/
-internal/diagnostics/
+internal/
+!internal/tests/
 *.log
 .DS_Store

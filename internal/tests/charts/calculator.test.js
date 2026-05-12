@@ -1,6 +1,6 @@
 const { describe, it } = require('node:test');
 const assert = require('node:assert');
-const { ChartCalculator } = require('../../src/charts/calculator');
+const { ChartCalculator } = require('../../../src/charts/calculator');
 
 const calc = new ChartCalculator();
 
@@ -26,14 +26,16 @@ describe('ChartCalculator', () => {
   });
 
   describe('donut', () => {
-    it('segments sum to exactly 2*PI', () => {
+    it('segments span exactly 2*PI', () => {
       const result = calc.donut({
         data: [{ label: 'A', value: 30 }, { label: 'B', value: 70 }],
         outerRadius: 100,
         innerRadius: 0.65,
       });
-      const lastSegment = result.segments[result.segments.length - 1];
-      assert.ok(Math.abs(lastSegment.endingAngle - Math.PI * 2) < 0.0001);
+      const first = result.segments[0];
+      const last = result.segments[result.segments.length - 1];
+      const totalSweep = last.endAngle - first.startAngle;
+      assert.ok(Math.abs(totalSweep - Math.PI * 2) < 0.0001);
     });
 
     it('each segment starts where previous ended', () => {
@@ -42,8 +44,8 @@ describe('ChartCalculator', () => {
         outerRadius: 100,
         innerRadius: 0.65,
       });
-      assert.ok(Math.abs(result.segments[1].startingAngle - result.segments[0].endingAngle) < 0.0001);
-      assert.ok(Math.abs(result.segments[2].startingAngle - result.segments[1].endingAngle) < 0.0001);
+      assert.ok(Math.abs(result.segments[1].startAngle - result.segments[0].endAngle) < 0.0001);
+      assert.ok(Math.abs(result.segments[2].startAngle - result.segments[1].endAngle) < 0.0001);
     });
 
     it('handles single segment (100%)', () => {
@@ -53,7 +55,8 @@ describe('ChartCalculator', () => {
         innerRadius: 0.65,
       });
       assert.equal(result.segments.length, 1);
-      assert.ok(Math.abs(result.segments[0].endingAngle - Math.PI * 2) < 0.0001);
+      const sweep = result.segments[0].endAngle - result.segments[0].startAngle;
+      assert.ok(Math.abs(sweep - Math.PI * 2) < 0.0001);
     });
   });
 

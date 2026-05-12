@@ -1,6 +1,6 @@
 const { describe, it } = require('node:test');
 const assert = require('node:assert');
-const { DsCache } = require('../../src/ds/cache');
+const { DsCache } = require('../../../src/ds/cache');
 
 describe('DsCache', () => {
   it('stores and retrieves text styles by key', () => {

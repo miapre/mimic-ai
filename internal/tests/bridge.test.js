@@ -1,6 +1,6 @@
 const { describe, it } = require('node:test');
 const assert = require('node:assert');
-const { Bridge } = require('../src/bridge');
+const { Bridge } = require('../../src/bridge');
 
 describe('Bridge', () => {
   it('initializes with correct defaults', () => {

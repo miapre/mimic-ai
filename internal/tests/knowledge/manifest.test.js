@@ -2,7 +2,7 @@ const { describe, it, afterEach } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');
 const path = require('node:path');
-const { BuildManifest } = require('../../src/knowledge/manifest');
+const { BuildManifest } = require('../../../src/knowledge/manifest');
 
 const TEST_PATH = path.join(__dirname, 'test-manifest.json');
 

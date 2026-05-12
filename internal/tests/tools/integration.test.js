@@ -4,10 +4,10 @@ const { describe, it, beforeEach } = require('node:test');
 const assert = require('node:assert');
 const path = require('node:path');
 const { MockBridge } = require('../helpers/mock-bridge');
-const { DsCache } = require('../../src/ds/cache');
-const { DsResolver } = require('../../src/ds/resolver');
-const { KnowledgeStore } = require('../../src/knowledge/store');
-const { BuildManifest } = require('../../src/knowledge/manifest');
+const { DsCache } = require('../../../src/ds/cache');
+const { DsResolver } = require('../../../src/ds/resolver');
+const { KnowledgeStore } = require('../../../src/knowledge/store');
+const { BuildManifest } = require('../../../src/knowledge/manifest');
 
 /**
  * Build a full tool context with a mock bridge.
@@ -29,6 +29,10 @@ function createTestContext() {
     cacheHits: 0,
     selectedLibraryKey: null,
     expectedStyleCount: null,
+    consecutiveFailures: 0,
+    phaseToolCalls: { 0: 0, 1: 0, 2: 0, 3: 0, 4: 0, 5: 0 },
+    checkpointIssued: false,
+    bindingFailures: [],
   };
 
   const handlers = {};
@@ -38,7 +42,7 @@ function createTestContext() {
   }
 
   function requirePhase(minPhase, hint) {
-    const { PhaseError } = require('../../src/utils/errors');
+    const { PhaseError } = require('../../../src/utils/errors');
     if (session.phase < minPhase) throw new PhaseError(session.phase, minPhase, hint);
   }
 
@@ -51,6 +55,10 @@ function createTestContext() {
     session.artboardId = null;
     session.toolCallCount = 0;
     session.cacheHits = 0;
+    session.consecutiveFailures = 0;
+    session.phaseToolCalls = { 0: 0, 1: 0, 2: 0, 3: 0, 4: 0, 5: 0 };
+    session.checkpointIssued = false;
+    session.bindingFailures = [];
   }
 
   const context = {
@@ -67,16 +75,16 @@ function createTestContext() {
   };
 
   // Register all tool modules
-  require('../../src/tools/status').register(null, context);
-  require('../../src/tools/ds-setup').register(null, context);
-  require('../../src/tools/build').register(null, context);
-  require('../../src/tools/components').register(null, context);
-  require('../../src/tools/edit').register(null, context);
-  require('../../src/tools/inspect').register(null, context);
-  require('../../src/tools/learning').register(null, context);
-  require('../../src/tools/batch').register(null, context);
-  require('../../src/tools/compliance').register(null, context);
-  require('../../src/tools/rendering').register(null, context);
+  require('../../../src/tools/status').register(null, context);
+  require('../../../src/tools/ds-setup').register(null, context);
+  require('../../../src/tools/build').register(null, context);
+  require('../../../src/tools/components').register(null, context);
+  require('../../../src/tools/edit').register(null, context);
+  require('../../../src/tools/inspect').register(null, context);
+  require('../../../src/tools/learning').register(null, context);
+  require('../../../src/tools/batch').register(null, context);
+  require('../../../src/tools/compliance').register(null, context);
+  require('../../../src/tools/rendering').register(null, context);
 
   return { context, handlers, bridge, session, dsCache, buildManifest, knowledgeStore };
 }
@@ -167,14 +175,14 @@ describe('MCP Tool Integration', () => {
     it('sends correct bridge message when phase is met', async () => {
       session.phase = 3;
       const result = await handlers.figma_create_frame({
-        name: 'Header Section',
+        name: 'Metrics Row',
         direction: 'VERTICAL',
         parentId: 'parent:1',
       });
       assert.ok(result.nodeId);
       const msgs = bridge.getMessages('create_frame');
       assert.strictEqual(msgs.length, 1);
-      assert.strictEqual(msgs[0].payload.name, 'Header Section');
+      assert.strictEqual(msgs[0].payload.name, 'Metrics Row');
       assert.strictEqual(msgs[0].payload.direction, 'VERTICAL');
     });
 
@@ -320,7 +328,7 @@ describe('MCP Tool Integration', () => {
   describe('figma_validate_ds_compliance', () => {
     it('sends validate message to bridge', async () => {
       const result = await handlers.figma_validate_ds_compliance({ nodeId: 'art:1' });
-      const msgs = bridge.getMessages('validate');
+      const msgs = bridge.getMessages('validate_ds_compliance');
       assert.strictEqual(msgs.length, 1);
       assert.strictEqual(msgs[0].payload.nodeId, 'art:1');
       assert.ok(result.summary);
@@ -328,7 +336,7 @@ describe('MCP Tool Integration', () => {
     });
 
     it('returns violations when bridge reports them', async () => {
-      bridge.setResponse('validate', {
+      bridge.setResponse('validate_ds_compliance', {
         violations: [{ nodeId: 'n:1', rule: 'no-raw-hex', severity: 'error' }],
         summary: { totalNodes: 10, compliant: 9, violations: 1 },
       });

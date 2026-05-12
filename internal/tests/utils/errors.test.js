@@ -1,6 +1,6 @@
 const { describe, it } = require('node:test');
 const assert = require('node:assert');
-const { DsRequired, PluginError, PhaseError, BridgeError } = require('../../src/utils/errors');
+const { DsRequired, PluginError, PhaseError, BridgeError } = require('../../../src/utils/errors');
 
 describe('Error types', () => {
   it('DsRequired includes property, available list, and recovery hint', () => {
