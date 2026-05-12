@@ -1,5 +1,7 @@
 'use strict';
 
+const { surfaceBindingFeedback } = require('../utils/binding-feedback');
+
 const PHASE_HINT = 'Complete DS Discovery and Style Inventory first (call mimic_discover_ds → preload → figma_set_session_defaults).';
 
 function register(server, context) {
@@ -15,6 +17,7 @@ function register(server, context) {
         componentKey: { type: 'string', description: 'Component key from the DS library.' },
         name: { type: 'string', description: 'Instance name override.' },
         parentId: { type: 'string', description: 'Parent node ID to insert into.' },
+        importMode: { type: 'string', enum: ['component', 'componentSet'], description: 'Optional import hint. Usually inferred from DS discovery cache.' },
       },
       required: ['componentKey', 'parentId'],
     },
@@ -29,11 +32,31 @@ function register(server, context) {
         };
       }
 
+      // ── No retry on timeout ──────────────────────────────────────
+      // insert_component is NOT idempotent — the plugin creates the
+      // instance before responding. If the bridge times out but the
+      // plugin succeeded, retrying creates duplicate instances (issue #4).
+      // Use a generous 180s timeout instead (cold library imports can
+      // take 60-90s).
+      const componentMeta = dsCache.getComponent(args.componentKey);
+      const insertArgs = { ...args };
+      if (!insertArgs.importMode && componentMeta && typeof componentMeta.isComponentSet === 'boolean') {
+        insertArgs.importMode = componentMeta.isComponentSet ? 'componentSet' : 'component';
+      }
+
       let result;
       try {
-        result = await bridge.send('insert_component', args);
+        result = await bridge.send('insert_component', insertArgs, 180000);
       } catch (err) {
+        const isTimeout = err.message && err.message.includes('timeout');
         dsCache.markFailed(args.componentKey);
+        if (isTimeout) {
+          return {
+            error: 'INSERT_TIMEOUT',
+            componentKey: args.componentKey,
+            hint: 'Component insertion timed out. The component MAY have been created in Figma — check the canvas before retrying. If it exists, use figma_get_node_children on the parent to find it.',
+          };
+        }
         throw err;
       }
 
@@ -45,6 +68,7 @@ function register(server, context) {
         dsCache.addComponent(result.componentKey, {
           name: result.name || args.name,
           variants: result.variants || null,
+          isComponentSet: componentMeta?.isComponentSet,
         });
       }
 
@@ -67,9 +91,66 @@ function register(server, context) {
         );
       }
 
+      // ── Build explicit configuration checklist from configurationHints ──
+      const configHints = result?.configurationHints || {};
+      const checklist = [];
+
+      // Boolean properties — auto-disabled at insertion time by the plugin.
+      // The builder only needs to RE-ENABLE booleans the HTML explicitly shows.
+      const disabledBools = result?.disabledBooleans || [];
+      const boolProps = configHints.booleanProperties || {};
+      const boolKeys = Object.keys(boolProps);
+      if (disabledBools.length > 0) {
+        const boolList = disabledBools.map(k => {
+          const displayName = k.includes('#') ? k.split('#')[0].trim() : k;
+          return displayName;
+        });
+        checklist.push({
+          action: 'ENABLE_BOOLEANS_IF_NEEDED',
+          message: `${disabledBools.length} boolean(s) were auto-disabled: ${boolList.join(', ')}. Only re-enable those the source HTML explicitly shows (e.g. an icon that is visible in the HTML). Most components work correctly with all booleans OFF.`,
+          properties: disabledBools,
+        });
+      } else if (boolKeys.length > 0) {
+        // Fallback for components where auto-disable didn't run
+        const boolList = boolKeys.map(k => {
+          const displayName = k.includes('#') ? k.split('#')[0].trim() : k;
+          return displayName;
+        });
+        checklist.push({
+          action: 'DISABLE_BOOLEANS',
+          message: `Toggle OFF these boolean properties unless the source HTML explicitly shows them: ${boolList.join(', ')}`,
+          properties: boolKeys,
+        });
+      }
+
+      // Text nodes that need overrides — list ALL of them
+      const textNodes = configHints.textNodes || [];
+      if (textNodes.length > 0) {
+        const placeholders = textNodes.map(t => `"${t.name}" (current: "${t.characters}")`);
+        checklist.push({
+          action: 'OVERRIDE_ALL_TEXT',
+          message: `Override ALL ${textNodes.length} text node(s) with content from the source HTML. No placeholder text allowed.`,
+          textNodes: placeholders,
+        });
+      }
+
+      // Variant properties — list current values so Claude can decide what to change
+      const variantProps = configHints.variantProperties || {};
+      if (Object.keys(variantProps).length > 0) {
+        const variantSummary = Object.entries(variantProps).map(([key, val]) =>
+          `${key}: "${val.current}" (options: ${val.values.join(', ')})`
+        );
+        checklist.push({
+          action: 'SET_VARIANTS',
+          message: 'Review and set variant properties to match the source HTML.',
+          variants: variantSummary,
+        });
+      }
+
       return {
         nodeId,
         ...result,
+        configurationChecklist: checklist.length > 0 ? checklist : undefined,
         hints,
       };
     }
@@ -78,7 +159,7 @@ function register(server, context) {
   // ── figma_set_component_text ──────────────────────────────────
   registerTool(
     'figma_set_component_text',
-    'Sets text on a component instance by finding a text node with the given name.',
+    'Sets text on a component instance by finding a text node with the given name. Prefer figma_set_component_text_by_id when configurationHints include text node IDs, because many components contain repeated text node names.',
     {
       type: 'object',
       properties: {
@@ -92,9 +173,40 @@ function register(server, context) {
       requirePhase(2, PHASE_HINT);
       const result = await bridge.send('set_component_text', args);
       session.toolCallCount++;
+      surfaceBindingFeedback(result, 'set_component_text');
       return {
         ...result,
-        hint: 'Text set. Remember to override ALL text nodes — no placeholder content allowed.',
+        hint: result?.bindingFailures
+          ? 'Text set but fill variable binding FAILED — check warnings.'
+          : 'Text set. Remember to override ALL text nodes — no placeholder content allowed.',
+      };
+    }
+  );
+
+  // ── figma_set_component_text_by_id ────────────────────────────
+  registerTool(
+    'figma_set_component_text_by_id',
+    'Sets text on a component instance using an exact text node ID from configurationHints.textNodes. Use this instead of name-based text overrides when available.',
+    {
+      type: 'object',
+      properties: {
+        nodeId: { type: 'string', description: 'Component instance node ID that should contain the text node.' },
+        textNodeId: { type: 'string', description: 'Exact TEXT node ID from configurationHints.textNodes.' },
+        content: { type: 'string', description: 'New text content.' },
+        fillVariable: { type: 'string', description: 'Optional DS text color variable path.' },
+      },
+      required: ['nodeId', 'textNodeId', 'content'],
+    },
+    async (args) => {
+      requirePhase(2, PHASE_HINT);
+      const result = await bridge.send('set_component_text_by_id', args);
+      session.toolCallCount++;
+      surfaceBindingFeedback(result, 'set_component_text_by_id');
+      return {
+        ...result,
+        hint: result?.bindingFailures
+          ? 'Text set by ID but fill variable binding FAILED — check warnings.'
+          : 'Text set by exact node ID.',
       };
     }
   );

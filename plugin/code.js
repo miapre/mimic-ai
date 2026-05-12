@@ -18,6 +18,23 @@ var styleCache = new Map();
 /** @type {Map<string, Variable>} variable path → Variable object */
 var variableCache = new Map();
 
+// ── Type Coercion Helpers ─────────────────────────────────────────────────────
+// MCP protocol may deliver booleans as strings and arrays as JSON strings.
+
+function coerceBool(val, fallback) {
+  if (typeof val === 'boolean') return val;
+  if (typeof val === 'string') return val.toLowerCase() === 'true';
+  return fallback !== undefined ? fallback : false;
+}
+
+function coerceArray(val) {
+  if (Array.isArray(val)) return val;
+  if (typeof val === 'string') {
+    try { var parsed = JSON.parse(val); if (Array.isArray(parsed)) return parsed; } catch (e) {}
+  }
+  return null;
+}
+
 // ── Enforcement Gate ───────────────────────────────────────────────────────────
 
 function enforceText(params) {
@@ -64,16 +81,20 @@ function getVariableByPath(path) {
   var cached = variableCache.get(path);
   if (cached) return cached;
 
-  // Search local collections
+  // Search local collections (includes library variables already in the file)
   var collections = figma.variables.getLocalVariableCollections();
   for (var c = 0; c < collections.length; c++) {
     var col = collections[c];
     var varIds = col.variableIds;
     for (var v = 0; v < varIds.length; v++) {
       var variable = figma.variables.getVariableById(varIds[v]);
-      if (variable && variable.name === path) {
-        variableCache.set(path, variable);
-        return variable;
+      if (variable) {
+        // Match against full name or just the leaf segment
+        var leafName = variable.name.split('/').pop();
+        if (variable.name === path || leafName === path) {
+          variableCache.set(path, variable);
+          return variable;
+        }
       }
     }
   }
@@ -81,10 +102,52 @@ function getVariableByPath(path) {
   return null;
 }
 
+// Async version that can import library variables by key
+async function getVariableByKey(key) {
+  if (!key) return null;
+  try {
+    return await figma.variables.importVariableByKeyAsync(key);
+  } catch (e) {
+    return null;
+  }
+}
+
+// ── Binding Tracker ───────────────────────────────────────────────────────────
+// Every handler that binds DS values creates one of these to track what
+// actually succeeded vs. silently failed.
+
+function createBindingTracker() {
+  var applied = {};
+  var warnings = [];
+  return {
+    applied: applied,
+    warnings: warnings,
+    track: function (name, success, detail) {
+      applied[name] = success;
+      if (!success && detail) {
+        warnings.push(name + ': ' + detail);
+      }
+    },
+    result: function () {
+      var hasFailures = false;
+      for (var k in applied) {
+        if (applied[k] === false) { hasFailures = true; break; }
+      }
+      return {
+        applied: applied,
+        warnings: warnings,
+        bindingFailures: hasFailures,
+      };
+    },
+  };
+}
+
 function bindVariable(node, prop, varPath) {
   if (!varPath) return false;
   var variable = getVariableByPath(varPath);
-  if (!variable) return false;
+  if (!variable) {
+    return false;
+  }
 
   try {
     node.setBoundVariable(prop, variable);
@@ -97,7 +160,9 @@ function bindVariable(node, prop, varPath) {
 function bindFillVariable(node, varPath) {
   if (!varPath) return false;
   var variable = getVariableByPath(varPath);
-  if (!variable) return false;
+  if (!variable) {
+    return false;
+  }
 
   try {
     var solidPaint = figma.variables.setBoundVariableForPaint(
@@ -115,7 +180,9 @@ function bindFillVariable(node, varPath) {
 function bindStrokeVariable(node, varPath) {
   if (!varPath) return false;
   var variable = getVariableByPath(varPath);
-  if (!variable) return false;
+  if (!variable) {
+    return false;
+  }
 
   try {
     var solidPaint = figma.variables.setBoundVariableForPaint(
@@ -168,13 +235,14 @@ function getParent(parentId) {
   return parent;
 }
 
-// Walk an instance tree and collect text nodes + boolean properties for configuration hints
+// Walk an instance tree and collect text nodes, properties, and variant info for configuration hints
 function collectConfigurationHints(instance) {
   var textNodes = [];
   var booleanProperties = {};
+  var variantProperties = {};
   var iconSlots = [];
 
-  // Walk the instance to find overridable text and boolean props
+  // Walk the instance to find overridable text and icon slots
   function walk(node) {
     if (node.type === 'TEXT') {
       textNodes.push({
@@ -199,7 +267,7 @@ function collectConfigurationHints(instance) {
 
   walk(instance);
 
-  // Collect boolean properties from component properties
+  // Collect all component properties (booleans + variants with current values)
   try {
     var props = instance.componentProperties;
     if (props) {
@@ -216,9 +284,42 @@ function collectConfigurationHints(instance) {
     // Not all instances expose componentProperties
   }
 
+  // Collect variant property names + available values from the component set
+  try {
+    var mainComp = instance.mainComponent;
+    if (mainComp) {
+      var compSet = mainComp.parent && mainComp.parent.type === 'COMPONENT_SET' ? mainComp.parent : null;
+      if (compSet && compSet.variantGroupProperties) {
+        var vgp = compSet.variantGroupProperties;
+        for (var propName in vgp) {
+          if (vgp.hasOwnProperty(propName)) {
+            variantProperties[propName] = {
+              values: vgp[propName].values || [],
+              current: null,
+            };
+          }
+        }
+        // Get current values from the instance's resolved variant
+        try {
+          var variantProps = mainComp.variantProperties;
+          if (variantProps) {
+            for (var vp in variantProps) {
+              if (variantProperties[vp]) {
+                variantProperties[vp].current = variantProps[vp];
+              }
+            }
+          }
+        } catch (e2) { /* some components don't expose variantProperties */ }
+      }
+    }
+  } catch (e) {
+    // Not all instances have component sets
+  }
+
   return {
     textNodes: textNodes,
     booleanProperties: booleanProperties,
+    variantProperties: variantProperties,
     iconSlots: iconSlots,
   };
 }
@@ -250,17 +351,18 @@ handlers.set_session_defaults = function (payload) {
   // Update enforcement profile
   if (payload.enforcementProfile) {
     var ep = payload.enforcementProfile;
-    if (typeof ep.enforceTextStyles === 'boolean') enforcementProfile.enforceTextStyles = ep.enforceTextStyles;
-    if (typeof ep.enforceColorVars === 'boolean') enforcementProfile.enforceColorVars = ep.enforceColorVars;
-    if (typeof ep.enforceSpacingVars === 'boolean') enforcementProfile.enforceSpacingVars = ep.enforceSpacingVars;
-    if (typeof ep.enforceRadiusVars === 'boolean') enforcementProfile.enforceRadiusVars = ep.enforceRadiusVars;
+    enforcementProfile.enforceTextStyles = coerceBool(ep.enforceTextStyles, enforcementProfile.enforceTextStyles);
+    enforcementProfile.enforceColorVars = coerceBool(ep.enforceColorVars, enforcementProfile.enforceColorVars);
+    enforcementProfile.enforceSpacingVars = coerceBool(ep.enforceSpacingVars, enforcementProfile.enforceSpacingVars);
+    enforcementProfile.enforceRadiusVars = coerceBool(ep.enforceRadiusVars, enforcementProfile.enforceRadiusVars);
   }
 
   // Preload text styles if requested
   var preloadedStyles = 0;
-  if (payload.textStyleKeys && Array.isArray(payload.textStyleKeys)) {
-    for (var i = 0; i < payload.textStyleKeys.length; i++) {
-      var key = payload.textStyleKeys[i];
+  var textStyleKeys = coerceArray(payload.textStyleKeys);
+  if (textStyleKeys) {
+    for (var i = 0; i < textStyleKeys.length; i++) {
+      var key = textStyleKeys[i];
       try {
         var style = figma.getStyleById(key);
         if (style && style.type === 'TEXT') {
@@ -275,9 +377,10 @@ handlers.set_session_defaults = function (payload) {
 
   // Preload variables if paths provided
   var preloadedVars = 0;
-  if (payload.variablePaths && Array.isArray(payload.variablePaths)) {
-    for (var i = 0; i < payload.variablePaths.length; i++) {
-      var v = getVariableByPath(payload.variablePaths[i]);
+  var variablePaths = coerceArray(payload.variablePaths);
+  if (variablePaths) {
+    for (var i = 0; i < variablePaths.length; i++) {
+      var v = getVariableByPath(variablePaths[i]);
       if (v) preloadedVars++;
     }
   }
@@ -291,9 +394,206 @@ handlers.set_session_defaults = function (payload) {
   };
 };
 
+handlers.preload_styles = async function (payload) {
+  var preloadedStyles = 0;
+  var loaded = [];
+  var styleKeys = coerceArray(payload.styleKeys);
+  if (styleKeys) {
+    for (var i = 0; i < styleKeys.length; i++) {
+      var key = styleKeys[i];
+      try {
+        // Import from library by key (async)
+        var style = await figma.importStyleByKeyAsync(key);
+        if (style && style.type === 'TEXT') {
+          styleCache.set(key, style);
+          loaded.push({ key: key, name: style.name });
+          preloadedStyles++;
+        }
+      } catch (e) {
+        // Style not found in any enabled library, skip
+      }
+    }
+  }
+  return {
+    preloadedStyles: preloadedStyles,
+    styleCacheSize: styleCache.size,
+    styles: loaded,
+  };
+};
+
+handlers.preload_variables = async function (payload) {
+  var preloadedVars = 0;
+  var variables = coerceArray(payload.variables);
+  if (variables) {
+    for (var i = 0; i < variables.length; i++) {
+      var entry = variables[i];
+      try {
+        // Import library variable by key
+        var variable = await figma.variables.importVariableByKeyAsync(entry.key);
+        if (variable) {
+          variableCache.set(entry.path, variable);
+          preloadedVars++;
+        }
+      } catch (e) {
+        // Variable not found, skip
+      }
+    }
+  }
+  return {
+    preloadedVars: preloadedVars,
+    variableCacheSize: variableCache.size,
+  };
+};
+
+// ── Library Discovery ─────────────────────────────────────────────────────────
+
+handlers.discover_library_variables = async function (payload) {
+  // Use teamLibrary API to enumerate variable collections from enabled libraries
+  var collections = await figma.teamLibrary.getAvailableLibraryVariableCollectionsAsync();
+  var libraries = {};
+  var allVariables = [];
+
+  for (var c = 0; c < collections.length; c++) {
+    var col = collections[c];
+    var libName = col.libraryName || 'Unknown';
+    if (!libraries[libName]) {
+      libraries[libName] = { name: libName, collections: [] };
+    }
+    libraries[libName].collections.push(col.name);
+
+    // Enumerate variables in this collection
+    var vars = await figma.teamLibrary.getVariablesInLibraryCollectionAsync(col.key);
+    for (var v = 0; v < vars.length; v++) {
+      var libVar = vars[v];
+      allVariables.push({
+        name: libVar.name,
+        key: libVar.key,
+        resolvedType: libVar.resolvedType,
+        collection: col.name,
+        libraryName: libName,
+      });
+    }
+  }
+
+  return {
+    libraries: Object.values(libraries),
+    variables: allVariables,
+    totalCollections: collections.length,
+    totalVariables: allVariables.length,
+  };
+};
+
+handlers.discover_library_styles = async function (payload) {
+  var styles = [];
+  var seenKeys = {};
+
+  // 1. Local text styles (file-level)
+  var localTextStyles = figma.getLocalTextStyles();
+  for (var i = 0; i < localTextStyles.length; i++) {
+    var style = localTextStyles[i];
+    if (!seenKeys[style.key]) {
+      seenKeys[style.key] = true;
+      styles.push({ key: style.key, name: style.name, description: style.description || '' });
+      styleCache.set(style.key, style);
+    }
+  }
+
+  // 2. Scan existing text nodes on the current page for library styles
+  //    Library styles are NOT returned by getLocalTextStyles — they only appear
+  //    when bound to a text node that has been placed in the file.
+  var page = figma.currentPage;
+  var textNodes = page.findAll(function (n) { return n.type === 'TEXT'; });
+  for (var i = 0; i < textNodes.length; i++) {
+    var textNode = textNodes[i];
+    try {
+      var boundStyle = textNode.textStyleId;
+      if (boundStyle && typeof boundStyle === 'string' && boundStyle !== '') {
+        var resolved = figma.getStyleById(boundStyle);
+        if (resolved && resolved.key && !seenKeys[resolved.key]) {
+          seenKeys[resolved.key] = true;
+          styles.push({ key: resolved.key, name: resolved.name, description: resolved.description || '' });
+          styleCache.set(resolved.key, resolved);
+        }
+      }
+    } catch (e) { /* skip unresolvable */ }
+  }
+
+  return {
+    styles: styles,
+    totalStyles: styles.length,
+    hint: styles.length === 0
+      ? 'No text styles found locally or on existing nodes. Use figma_preload_styles with keys from Figma MCP search_design_system to import library styles.'
+      : styles.length + ' text styles discovered and cached.',
+  };
+};
+
+handlers.discover_library_components = async function (payload) {
+  // Scan all component instances on the current page to discover which
+  // DS library components are available. This works because existing builds
+  // (or templates) on the page use library components, giving us their keys.
+  var page = figma.currentPage;
+  var instances = page.findAll(function (n) { return n.type === 'INSTANCE'; });
+  var seen = {};
+  var components = [];
+
+  for (var i = 0; i < instances.length; i++) {
+    var inst = instances[i];
+    try {
+      var mainComp = inst.mainComponent;
+      if (!mainComp) continue;
+
+      // Get the component set (parent) if it exists
+      var compSet = mainComp.parent && mainComp.parent.type === 'COMPONENT_SET' ? mainComp.parent : null;
+      var key = compSet ? compSet.key : mainComp.key;
+      var name = compSet ? compSet.name : mainComp.name;
+
+      if (!key || seen[key]) continue;
+      seen[key] = true;
+
+      // Detect library origin
+      var isRemote = mainComp.remote;
+      var variantCount = compSet ? compSet.children.length : 1;
+
+      // Collect variant property names if it's a set
+      var variantProps = [];
+      if (compSet && compSet.variantGroupProperties) {
+        var props = compSet.variantGroupProperties;
+        for (var propName in props) {
+          if (props.hasOwnProperty(propName)) {
+            variantProps.push({
+              name: propName,
+              values: props[propName].values || [],
+            });
+          }
+        }
+      }
+
+      components.push({
+        key: key,
+        name: name,
+        isRemote: isRemote,
+        isComponentSet: !!compSet,
+        variantCount: variantCount,
+        variantProperties: variantProps,
+        description: (compSet || mainComp).description || '',
+      });
+    } catch (e) { /* skip unresolvable */ }
+  }
+
+  return {
+    components: components,
+    totalFound: components.length,
+    totalInstancesScanned: instances.length,
+    hint: components.length === 0
+      ? 'No component instances found on this page. Use Figma MCP search_design_system to find library components by name.'
+      : components.length + ' unique components discovered from existing instances on the page.',
+  };
+};
+
 handlers.create_frame = function (payload) {
   var parent = getParent(payload.parentId);
   var frame = figma.createFrame();
+  var bt = createBindingTracker();
 
   // Name
   frame.name = payload.name || 'Frame';
@@ -306,11 +606,16 @@ handlers.create_frame = function (payload) {
   if (payload.counterAxisAlignItems) frame.counterAxisAlignItems = payload.counterAxisAlignItems;
 
   // Sizing — deferred to after appendChild (FILL requires auto-layout parent)
-  var deferSizingH = payload.layoutSizingHorizontal || 'HUG';
-  var deferSizingV = payload.layoutSizingVertical || 'HUG';
+  // When width/height is set, default to FIXED (not HUG) to preserve dimensions
+  var deferSizingH = payload.layoutSizingHorizontal || (payload.width ? 'FIXED' : 'HUG');
+  var deferSizingV = payload.layoutSizingVertical || (payload.height ? 'FIXED' : 'HUG');
 
-  // Fixed dimensions (for artboards)
-  if (payload.width) frame.resize(payload.width, payload.height || 100);
+  // Fixed dimensions (for artboards and sized frames)
+  if (payload.width || payload.height) {
+    var w = payload.width || frame.width || 100;
+    var h = payload.height || frame.height || 100;
+    frame.resize(w, h);
+  }
   if (payload.minWidth) frame.minWidth = payload.minWidth;
   if (payload.maxWidth) frame.maxWidth = payload.maxWidth;
   if (payload.minHeight) frame.minHeight = payload.minHeight;
@@ -323,46 +628,47 @@ handlers.create_frame = function (payload) {
   var deferX = payload.x;
   var deferY = payload.y;
 
-  // ── DS Variable Bindings ──
+  // ── DS Variable Bindings (tracked) ──
 
   // Gap (spacing)
   if (payload.gapVariable) {
-    bindVariable(frame, 'itemSpacing', payload.gapVariable);
+    bt.track('gapVariable', bindVariable(frame, 'itemSpacing', payload.gapVariable), 'variable "' + payload.gapVariable + '" not found in cache (' + variableCache.size + ' cached)');
   } else if (typeof payload.gap === 'number') {
     frame.itemSpacing = payload.gap;
   }
 
   // Padding (spacing variables)
   if (payload.paddingTopVariable) {
-    bindVariable(frame, 'paddingTop', payload.paddingTopVariable);
+    bt.track('paddingTopVariable', bindVariable(frame, 'paddingTop', payload.paddingTopVariable), 'variable "' + payload.paddingTopVariable + '" not found');
   } else if (typeof payload.paddingTop === 'number') {
     frame.paddingTop = payload.paddingTop;
   }
 
   if (payload.paddingRightVariable) {
-    bindVariable(frame, 'paddingRight', payload.paddingRightVariable);
+    bt.track('paddingRightVariable', bindVariable(frame, 'paddingRight', payload.paddingRightVariable), 'variable "' + payload.paddingRightVariable + '" not found');
   } else if (typeof payload.paddingRight === 'number') {
     frame.paddingRight = payload.paddingRight;
   }
 
   if (payload.paddingBottomVariable) {
-    bindVariable(frame, 'paddingBottom', payload.paddingBottomVariable);
+    bt.track('paddingBottomVariable', bindVariable(frame, 'paddingBottom', payload.paddingBottomVariable), 'variable "' + payload.paddingBottomVariable + '" not found');
   } else if (typeof payload.paddingBottom === 'number') {
     frame.paddingBottom = payload.paddingBottom;
   }
 
   if (payload.paddingLeftVariable) {
-    bindVariable(frame, 'paddingLeft', payload.paddingLeftVariable);
+    bt.track('paddingLeftVariable', bindVariable(frame, 'paddingLeft', payload.paddingLeftVariable), 'variable "' + payload.paddingLeftVariable + '" not found');
   } else if (typeof payload.paddingLeft === 'number') {
     frame.paddingLeft = payload.paddingLeft;
   }
 
   // Shorthand padding (all sides same)
   if (payload.paddingVariable) {
-    bindVariable(frame, 'paddingTop', payload.paddingVariable);
-    bindVariable(frame, 'paddingRight', payload.paddingVariable);
-    bindVariable(frame, 'paddingBottom', payload.paddingVariable);
-    bindVariable(frame, 'paddingLeft', payload.paddingVariable);
+    var padOk = bindVariable(frame, 'paddingTop', payload.paddingVariable)
+             && bindVariable(frame, 'paddingRight', payload.paddingVariable)
+             && bindVariable(frame, 'paddingBottom', payload.paddingVariable)
+             && bindVariable(frame, 'paddingLeft', payload.paddingVariable);
+    bt.track('paddingVariable', padOk, 'variable "' + payload.paddingVariable + '" not found');
   } else if (typeof payload.padding === 'number') {
     frame.paddingTop = payload.padding;
     frame.paddingRight = payload.padding;
@@ -372,7 +678,7 @@ handlers.create_frame = function (payload) {
 
   // Fill (color variable)
   if (payload.fillVariable) {
-    bindFillVariable(frame, payload.fillVariable);
+    bt.track('fillVariable', bindFillVariable(frame, payload.fillVariable), 'variable "' + payload.fillVariable + '" not found in cache (' + variableCache.size + ' cached)');
   } else if (payload.fill) {
     applySolidFill(frame, payload.fill);
   } else {
@@ -382,7 +688,7 @@ handlers.create_frame = function (payload) {
 
   // Stroke
   if (payload.strokeVariable) {
-    bindStrokeVariable(frame, payload.strokeVariable);
+    bt.track('strokeVariable', bindStrokeVariable(frame, payload.strokeVariable), 'variable "' + payload.strokeVariable + '" not found');
     if (typeof payload.strokeWeight === 'number') frame.strokeWeight = payload.strokeWeight;
     if (payload.strokeAlign) frame.strokeAlign = payload.strokeAlign;
   } else if (payload.stroke) {
@@ -394,19 +700,20 @@ handlers.create_frame = function (payload) {
 
   // Corner radius (radius variable)
   if (payload.cornerRadiusVariable) {
-    bindVariable(frame, 'topLeftRadius', payload.cornerRadiusVariable);
-    bindVariable(frame, 'topRightRadius', payload.cornerRadiusVariable);
-    bindVariable(frame, 'bottomLeftRadius', payload.cornerRadiusVariable);
-    bindVariable(frame, 'bottomRightRadius', payload.cornerRadiusVariable);
+    var radOk = bindVariable(frame, 'topLeftRadius', payload.cornerRadiusVariable)
+             && bindVariable(frame, 'topRightRadius', payload.cornerRadiusVariable)
+             && bindVariable(frame, 'bottomLeftRadius', payload.cornerRadiusVariable)
+             && bindVariable(frame, 'bottomRightRadius', payload.cornerRadiusVariable);
+    bt.track('cornerRadiusVariable', radOk, 'variable "' + payload.cornerRadiusVariable + '" not found');
   } else if (typeof payload.cornerRadius === 'number') {
     frame.cornerRadius = payload.cornerRadius;
   }
 
   // Individual corner radii
-  if (payload.topLeftRadiusVariable) bindVariable(frame, 'topLeftRadius', payload.topLeftRadiusVariable);
-  if (payload.topRightRadiusVariable) bindVariable(frame, 'topRightRadius', payload.topRightRadiusVariable);
-  if (payload.bottomLeftRadiusVariable) bindVariable(frame, 'bottomLeftRadius', payload.bottomLeftRadiusVariable);
-  if (payload.bottomRightRadiusVariable) bindVariable(frame, 'bottomRightRadius', payload.bottomRightRadiusVariable);
+  if (payload.topLeftRadiusVariable) bt.track('topLeftRadiusVariable', bindVariable(frame, 'topLeftRadius', payload.topLeftRadiusVariable), 'not found');
+  if (payload.topRightRadiusVariable) bt.track('topRightRadiusVariable', bindVariable(frame, 'topRightRadius', payload.topRightRadiusVariable), 'not found');
+  if (payload.bottomLeftRadiusVariable) bt.track('bottomLeftRadiusVariable', bindVariable(frame, 'bottomLeftRadius', payload.bottomLeftRadiusVariable), 'not found');
+  if (payload.bottomRightRadiusVariable) bt.track('bottomRightRadiusVariable', bindVariable(frame, 'bottomRightRadius', payload.bottomRightRadiusVariable), 'not found');
 
   // Wrap
   if (payload.layoutWrap) frame.layoutWrap = payload.layoutWrap;
@@ -424,10 +731,14 @@ handlers.create_frame = function (payload) {
   if (typeof deferX === 'number') frame.x = deferX;
   if (typeof deferY === 'number') frame.y = deferY;
 
+  var bindingResult = bt.result();
   return {
     nodeId: frame.id,
     name: frame.name,
     type: 'FRAME',
+    applied: bindingResult.applied,
+    warnings: bindingResult.warnings,
+    bindingFailures: bindingResult.bindingFailures,
   };
 };
 
@@ -437,6 +748,7 @@ handlers.create_text = async function (payload) {
   enforceColorFill(payload, 'TEXT');
 
   var parent = getParent(payload.parentId);
+  var bt = createBindingTracker();
 
   // Load font BEFORE creating text node — some Figma versions
   // require the font loaded even for the initial empty text
@@ -448,13 +760,22 @@ handlers.create_text = async function (payload) {
   text.name = payload.name || 'Text';
 
   // Apply text style if provided
+  var textStyleApplied = false;
+  var textStyleName = null;
   if (payload.textStyleId) {
     try {
-      var style = styleCache.get(payload.textStyleId) || figma.getStyleById(payload.textStyleId);
+      var style = styleCache.get(payload.textStyleId);
+      if (!style) {
+        // Try importing from library by key
+        style = await figma.importStyleByKeyAsync(payload.textStyleId);
+      }
       if (style && style.type === 'TEXT') {
         text.textStyleId = style.id;
+        textStyleApplied = true;
+        textStyleName = style.name;
       }
     } catch (e) { /* Style not available */ }
+    bt.track('textStyle', textStyleApplied, textStyleApplied ? null : 'style "' + payload.textStyleId + '" not found or not importable (styleCache: ' + styleCache.size + ')');
   }
 
   // Set content (font is loaded)
@@ -466,13 +787,13 @@ handlers.create_text = async function (payload) {
   if (payload.fontSize && !payload.textStyleId) text.fontSize = payload.fontSize;
 
   // Typography variable bindings
-  if (payload.fontSizeVariable) bindVariable(text, 'fontSize', payload.fontSizeVariable);
-  if (payload.lineHeightVariable) bindVariable(text, 'lineHeight', payload.lineHeightVariable);
-  if (payload.letterSpacingVariable) bindVariable(text, 'letterSpacing', payload.letterSpacingVariable);
+  if (payload.fontSizeVariable) bt.track('fontSizeVariable', bindVariable(text, 'fontSize', payload.fontSizeVariable), 'variable "' + payload.fontSizeVariable + '" not found');
+  if (payload.lineHeightVariable) bt.track('lineHeightVariable', bindVariable(text, 'lineHeight', payload.lineHeightVariable), 'variable "' + payload.lineHeightVariable + '" not found');
+  if (payload.letterSpacingVariable) bt.track('letterSpacingVariable', bindVariable(text, 'letterSpacing', payload.letterSpacingVariable), 'variable "' + payload.letterSpacingVariable + '" not found');
 
   // Fill (text color)
   if (payload.fillVariable) {
-    bindFillVariable(text, payload.fillVariable);
+    bt.track('fillVariable', bindFillVariable(text, payload.fillVariable), 'variable "' + payload.fillVariable + '" not found in cache (' + variableCache.size + ' cached)');
   } else if (payload.fill) {
     applySolidFill(text, payload.fill);
   }
@@ -497,11 +818,16 @@ handlers.create_text = async function (payload) {
     if (payload.layoutSizingVertical) text.layoutSizingVertical = payload.layoutSizingVertical;
   } catch (e) { /* Parent isn't auto-layout */ }
 
+  var bindingResult = bt.result();
   return {
     nodeId: text.id,
     name: text.name,
     type: 'TEXT',
     characters: text.characters,
+    textStyleName: textStyleName,
+    applied: bindingResult.applied,
+    warnings: bindingResult.warnings,
+    bindingFailures: bindingResult.bindingFailures,
   };
 };
 
@@ -518,12 +844,41 @@ handlers.insert_component = function (payload) {
 
   var parent = getParent(payload.parentId);
 
-  // Import by key (async in Figma API)
-  var component = figma.importComponentByKeyAsync(payload.componentKey);
+  // Import by key. DS discovery knows whether a key belongs to a component set
+  // or a single component, so honor that hint to avoid waiting on the wrong
+  // Figma import API before falling back.
+  function importComponent(key) {
+    if (payload.importMode === 'component') {
+      return figma.importComponentByKeyAsync(key).catch(function () {
+        throw { error: 'COMPONENT_NOT_FOUND', message: 'Could not import component: ' + key };
+      });
+    }
 
-  // importComponentByKeyAsync returns a promise — Figma plugin sandbox supports top-level await style
-  // but we handle it via the async dispatcher below
-  return component.then(function (imported) {
+    if (payload.importMode === 'componentSet') {
+      return figma.importComponentSetByKeyAsync(key).then(function (componentSet) {
+        if (!componentSet || !('children' in componentSet) || componentSet.children.length === 0) {
+          throw { error: 'EMPTY_SET' };
+        }
+        return componentSet.children[0];
+      }).catch(function () {
+        throw { error: 'COMPONENT_SET_NOT_FOUND', message: 'Could not import component set: ' + key };
+      });
+    }
+
+    return figma.importComponentSetByKeyAsync(key).then(function (componentSet) {
+      if (!componentSet || !('children' in componentSet) || componentSet.children.length === 0) {
+        throw { error: 'EMPTY_SET' };
+      }
+      return componentSet.children[0];
+    }).catch(function (setErr) {
+      // Not a set — try as single component
+      return figma.importComponentByKeyAsync(key).catch(function () {
+        throw { error: 'COMPONENT_NOT_FOUND', message: 'Could not import as component or component set: ' + key };
+      });
+    });
+  }
+
+  return importComponent(payload.componentKey).then(function (imported) {
     var instance = imported.createInstance();
     instance.name = payload.name || imported.name;
 
@@ -544,6 +899,29 @@ handlers.insert_component = function (payload) {
       instance.layoutSizingVertical = deferInstSizingV;
     } catch (e) { /* not in auto-layout parent */ }
 
+    // ── Auto-disable all boolean properties ──────────────────────
+    // Booleans default ON in most DS components (hint text, help icons,
+    // trailing icons, asterisks, etc.).  The builder should only re-enable
+    // what the source HTML actually shows.  Disabling at insertion time
+    // eliminates the most common configuration mistake: forgetting to
+    // toggle off booleans that produce visual noise (issue #5/#6).
+    var disabledBooleans = [];
+    try {
+      var props = instance.componentProperties;
+      if (props) {
+        var keys = Object.keys(props);
+        for (var i = 0; i < keys.length; i++) {
+          var key = keys[i];
+          if (props[key].type === 'BOOLEAN' && props[key].value === true) {
+            var update = {};
+            update[key] = false;
+            instance.setProperties(update);
+            disabledBooleans.push(key);
+          }
+        }
+      }
+    } catch (e) { /* some instances don't support setProperties */ }
+
     // Collect configuration hints
     var hints = collectConfigurationHints(instance);
 
@@ -553,7 +931,9 @@ handlers.insert_component = function (payload) {
       type: 'INSTANCE',
       componentName: imported.name,
       componentKey: payload.componentKey,
+      resolvedVariantKey: imported.key || payload.componentKey,
       configurationHints: hints,
+      disabledBooleans: disabledBooleans,
     };
   });
 };
@@ -564,6 +944,7 @@ handlers.create_rectangle = function (payload) {
   enforceColorFill(payload, 'RECTANGLE');
   var parent = getParent(payload.parentId);
   var rect = figma.createRectangle();
+  var bt = createBindingTracker();
 
   rect.name = payload.name || 'Rectangle';
 
@@ -578,14 +959,14 @@ handlers.create_rectangle = function (payload) {
 
   // Fill
   if (payload.fillVariable) {
-    bindFillVariable(rect, payload.fillVariable);
+    bt.track('fillVariable', bindFillVariable(rect, payload.fillVariable), 'variable "' + payload.fillVariable + '" not found');
   } else if (payload.fill) {
     applySolidFill(rect, payload.fill);
   }
 
   // Stroke
   if (payload.strokeVariable) {
-    bindStrokeVariable(rect, payload.strokeVariable);
+    bt.track('strokeVariable', bindStrokeVariable(rect, payload.strokeVariable), 'variable "' + payload.strokeVariable + '" not found');
     if (typeof payload.strokeWeight === 'number') rect.strokeWeight = payload.strokeWeight;
     if (payload.strokeAlign) rect.strokeAlign = payload.strokeAlign;
   } else if (payload.stroke) {
@@ -597,19 +978,20 @@ handlers.create_rectangle = function (payload) {
 
   // Corner radius
   if (payload.cornerRadiusVariable) {
-    bindVariable(rect, 'topLeftRadius', payload.cornerRadiusVariable);
-    bindVariable(rect, 'topRightRadius', payload.cornerRadiusVariable);
-    bindVariable(rect, 'bottomLeftRadius', payload.cornerRadiusVariable);
-    bindVariable(rect, 'bottomRightRadius', payload.cornerRadiusVariable);
+    var radOk = bindVariable(rect, 'topLeftRadius', payload.cornerRadiusVariable)
+             && bindVariable(rect, 'topRightRadius', payload.cornerRadiusVariable)
+             && bindVariable(rect, 'bottomLeftRadius', payload.cornerRadiusVariable)
+             && bindVariable(rect, 'bottomRightRadius', payload.cornerRadiusVariable);
+    bt.track('cornerRadiusVariable', radOk, 'variable "' + payload.cornerRadiusVariable + '" not found');
   } else if (typeof payload.cornerRadius === 'number') {
     rect.cornerRadius = payload.cornerRadius;
   }
 
   // Individual corner radii
-  if (payload.topLeftRadiusVariable) bindVariable(rect, 'topLeftRadius', payload.topLeftRadiusVariable);
-  if (payload.topRightRadiusVariable) bindVariable(rect, 'topRightRadius', payload.topRightRadiusVariable);
-  if (payload.bottomLeftRadiusVariable) bindVariable(rect, 'bottomLeftRadius', payload.bottomLeftRadiusVariable);
-  if (payload.bottomRightRadiusVariable) bindVariable(rect, 'bottomRightRadius', payload.bottomRightRadiusVariable);
+  if (payload.topLeftRadiusVariable) bt.track('topLeftRadiusVariable', bindVariable(rect, 'topLeftRadius', payload.topLeftRadiusVariable), 'not found');
+  if (payload.topRightRadiusVariable) bt.track('topRightRadiusVariable', bindVariable(rect, 'topRightRadius', payload.topRightRadiusVariable), 'not found');
+  if (payload.bottomLeftRadiusVariable) bt.track('bottomLeftRadiusVariable', bindVariable(rect, 'bottomLeftRadius', payload.bottomLeftRadiusVariable), 'not found');
+  if (payload.bottomRightRadiusVariable) bt.track('bottomRightRadiusVariable', bindVariable(rect, 'bottomRightRadius', payload.bottomRightRadiusVariable), 'not found');
 
   // Opacity
   if (typeof payload.opacity === 'number') rect.opacity = payload.opacity;
@@ -620,10 +1002,14 @@ handlers.create_rectangle = function (payload) {
     if (deferRectSizingV) rect.layoutSizingVertical = deferRectSizingV;
   } catch (e) { /* not in auto-layout parent */ }
 
+  var bindingResult = bt.result();
   return {
     nodeId: rect.id,
     name: rect.name,
     type: 'RECTANGLE',
+    applied: bindingResult.applied,
+    warnings: bindingResult.warnings,
+    bindingFailures: bindingResult.bindingFailures,
   };
 };
 
@@ -631,6 +1017,7 @@ handlers.create_ellipse = function (payload) {
   enforceColorFill(payload, 'ELLIPSE');
   var parent = getParent(payload.parentId);
   var ellipse = figma.createEllipse();
+  var bt = createBindingTracker();
 
   ellipse.name = payload.name || 'Ellipse';
 
@@ -654,14 +1041,14 @@ handlers.create_ellipse = function (payload) {
 
   // Fill
   if (payload.fillVariable) {
-    bindFillVariable(ellipse, payload.fillVariable);
+    bt.track('fillVariable', bindFillVariable(ellipse, payload.fillVariable), 'variable "' + payload.fillVariable + '" not found');
   } else if (payload.fill) {
     applySolidFill(ellipse, payload.fill);
   }
 
   // Stroke
   if (payload.strokeVariable) {
-    bindStrokeVariable(ellipse, payload.strokeVariable);
+    bt.track('strokeVariable', bindStrokeVariable(ellipse, payload.strokeVariable), 'variable "' + payload.strokeVariable + '" not found');
     if (typeof payload.strokeWeight === 'number') ellipse.strokeWeight = payload.strokeWeight;
     if (payload.strokeAlign) ellipse.strokeAlign = payload.strokeAlign;
   } else if (payload.stroke) {
@@ -680,10 +1067,14 @@ handlers.create_ellipse = function (payload) {
     if (deferEllipseSizingV) ellipse.layoutSizingVertical = deferEllipseSizingV;
   } catch (e) { /* not in auto-layout parent */ }
 
+  var bindingResult = bt.result();
   return {
     nodeId: ellipse.id,
     name: ellipse.name,
     type: 'ELLIPSE',
+    applied: bindingResult.applied,
+    warnings: bindingResult.warnings,
+    bindingFailures: bindingResult.bindingFailures,
   };
 };
 
@@ -713,11 +1104,16 @@ handlers.create_svg = function (payload) {
   var deferSvgSizingV = payload.layoutSizingVertical;
 
   // Optionally apply fill/stroke variables to child vectors
+  var bt = createBindingTracker();
   if (payload.fillVariable || payload.strokeVariable) {
+    var fillOk = true;
+    var strokeOk = true;
+    var vectorCount = 0;
     function walkVectors(node) {
       if (node.type === 'VECTOR' || node.type === 'BOOLEAN_OPERATION' || node.type === 'STAR' || node.type === 'LINE' || node.type === 'POLYGON') {
-        if (payload.fillVariable) bindFillVariable(node, payload.fillVariable);
-        if (payload.strokeVariable) bindStrokeVariable(node, payload.strokeVariable);
+        vectorCount++;
+        if (payload.fillVariable && !bindFillVariable(node, payload.fillVariable)) fillOk = false;
+        if (payload.strokeVariable && !bindStrokeVariable(node, payload.strokeVariable)) strokeOk = false;
       }
       if ('children' in node) {
         for (var i = 0; i < node.children.length; i++) {
@@ -726,6 +1122,8 @@ handlers.create_svg = function (payload) {
       }
     }
     walkVectors(svgNode);
+    if (payload.fillVariable) bt.track('fillVariable', fillOk, fillOk ? null : 'variable "' + payload.fillVariable + '" not found (applied to ' + vectorCount + ' vectors)');
+    if (payload.strokeVariable) bt.track('strokeVariable', strokeOk, strokeOk ? null : 'variable "' + payload.strokeVariable + '" not found');
   }
 
   parent.appendChild(svgNode);
@@ -734,10 +1132,48 @@ handlers.create_svg = function (payload) {
     if (deferSvgSizingV) svgNode.layoutSizingVertical = deferSvgSizingV;
   } catch (e) { /* not in auto-layout parent */ }
 
+  // ── Enumerate unbound children for post-creation binding ──
+  var unboundChildren = [];
+  var childSummary = { vectors: 0, texts: 0, boundVectors: 0, boundTexts: 0 };
+  function walkForUnbound(node) {
+    if (node.type === 'VECTOR' || node.type === 'BOOLEAN_OPERATION' || node.type === 'STAR' || node.type === 'LINE' || node.type === 'POLYGON' || node.type === 'ELLIPSE') {
+      childSummary.vectors++;
+      // Check if fill is DS-bound (has boundVariables)
+      var hasFillBinding = node.boundVariables && node.boundVariables.fills && node.boundVariables.fills.length > 0;
+      if (hasFillBinding) {
+        childSummary.boundVectors++;
+      } else {
+        unboundChildren.push({ nodeId: node.id, type: node.type, name: node.name });
+      }
+    } else if (node.type === 'TEXT') {
+      childSummary.texts++;
+      var hasTextFillBinding = node.boundVariables && node.boundVariables.fills && node.boundVariables.fills.length > 0;
+      if (hasTextFillBinding) {
+        childSummary.boundTexts++;
+      } else {
+        unboundChildren.push({ nodeId: node.id, type: 'TEXT', name: node.name, characters: node.characters ? node.characters.substring(0, 40) : '' });
+      }
+    }
+    if ('children' in node) {
+      for (var i = 0; i < node.children.length; i++) {
+        walkForUnbound(node.children[i]);
+      }
+    }
+  }
+  walkForUnbound(svgNode);
+
+  var bindingResult = bt.result();
   return {
     nodeId: svgNode.id,
     name: svgNode.name,
     type: 'FRAME',
+    width: Math.round(svgNode.width),
+    height: Math.round(svgNode.height),
+    applied: bindingResult.applied,
+    warnings: bindingResult.warnings,
+    bindingFailures: bindingResult.bindingFailures,
+    unboundChildren: unboundChildren,
+    childSummary: childSummary,
   };
 };
 
@@ -788,13 +1224,72 @@ handlers.set_component_text = function (payload) {
   found.characters = content;
 
   // Optionally apply fill variable to the text
-  if (payload.fillVariable) bindFillVariable(found, payload.fillVariable);
+  var bt = createBindingTracker();
+  if (payload.fillVariable) {
+    bt.track('fillVariable', bindFillVariable(found, payload.fillVariable), 'variable "' + payload.fillVariable + '" not found');
+  }
 
+  var bindingResult = bt.result();
   return {
     nodeId: found.id,
     name: found.name,
     type: 'TEXT',
     characters: found.characters,
+    applied: bindingResult.applied,
+    warnings: bindingResult.warnings,
+    bindingFailures: bindingResult.bindingFailures,
+  };
+};
+
+handlers.set_component_text_by_id = function (payload) {
+  var root = figma.getNodeById(normalizeNodeId(payload.nodeId));
+  if (!root) throw { error: 'NODE_NOT_FOUND', property: 'nodeId', message: 'Node not found: ' + payload.nodeId, available: [], recovery: 'Check component instance nodeId.' };
+
+  var found = figma.getNodeById(normalizeNodeId(payload.textNodeId));
+  if (!found) throw { error: 'NODE_NOT_FOUND', property: 'textNodeId', message: 'Text node not found: ' + payload.textNodeId, available: [], recovery: 'Use a textNodeId returned in configurationHints.textNodes.' };
+  if (found.type !== 'TEXT') throw { error: 'INVALID_NODE_TYPE', property: 'textNodeId', message: 'Node is not a text node: ' + found.type, available: [], recovery: 'Provide a TEXT node ID from configurationHints.textNodes.' };
+
+  var belongsToRoot = false;
+  function walk(n) {
+    if (belongsToRoot) return;
+    if (n.id === found.id) {
+      belongsToRoot = true;
+      return;
+    }
+    if ('children' in n) {
+      for (var i = 0; i < n.children.length; i++) walk(n.children[i]);
+    }
+  }
+  walk(root);
+
+  if (!belongsToRoot) {
+    throw {
+      error: 'TEXT_NODE_OUTSIDE_COMPONENT',
+      property: 'textNodeId',
+      message: 'Text node ' + payload.textNodeId + ' is not inside component node ' + payload.nodeId,
+      available: [],
+      recovery: 'Use a textNodeId from the same component instance configurationHints.',
+    };
+  }
+
+  var content = payload.content || payload.characters || '';
+  found.characters = content;
+
+  var bt = createBindingTracker();
+  if (payload.fillVariable) {
+    bt.track('fillVariable', bindFillVariable(found, payload.fillVariable), 'variable "' + payload.fillVariable + '" not found');
+  }
+
+  var bindingResult = bt.result();
+  return {
+    nodeId: found.id,
+    parentNodeId: root.id,
+    name: found.name,
+    type: 'TEXT',
+    characters: found.characters,
+    applied: bindingResult.applied,
+    warnings: bindingResult.warnings,
+    bindingFailures: bindingResult.bindingFailures,
   };
 };
 
@@ -809,16 +1304,20 @@ handlers.set_variant = function (payload) {
 
   for (var i = 0; i < keys.length; i++) {
     var key = keys[i];
+    // Coerce string booleans to actual booleans for BOOLEAN component properties
+    var value = properties[key];
+    if (value === 'true') value = true;
+    if (value === 'false') value = false;
     try {
-      node.setProperties({ [key]: properties[key] });
-      applied[key] = properties[key];
+      node.setProperties({ [key]: value });
+      applied[key] = value;
     } catch (e) {
       // Try via componentProperties path
       try {
         var cp = node.componentProperties;
         if (cp && cp[key] !== undefined) {
-          node.setProperties({ [key]: properties[key] });
-          applied[key] = properties[key];
+          node.setProperties({ [key]: value });
+          applied[key] = value;
         }
       } catch (e2) {
         applied[key] = { error: e.message || 'Failed to set property' };
@@ -853,29 +1352,40 @@ handlers.set_text = function (payload) {
 handlers.set_node_fill = function (payload) {
   var node = figma.getNodeById(normalizeNodeId(payload.nodeId));
   if (!node) throw { error: 'NODE_NOT_FOUND', property: 'nodeId', message: 'Node not found: ' + payload.nodeId, available: [], recovery: 'Check nodeId.' };
+  var bt = createBindingTracker();
 
   if (payload.fillVariable) {
-    bindFillVariable(node, payload.fillVariable);
+    bt.track('fillVariable', bindFillVariable(node, payload.fillVariable), 'variable "' + payload.fillVariable + '" not found in cache (' + variableCache.size + ' cached)');
   } else if (payload.fill) {
     applySolidFill(node, payload.fill);
   } else {
-    // Clear fill
     node.fills = [];
   }
 
+  var bindingResult = bt.result();
   return {
     nodeId: node.id,
     name: node.name,
-    fillSet: !!(payload.fillVariable || payload.fill),
+    applied: bindingResult.applied,
+    warnings: bindingResult.warnings,
+    bindingFailures: bindingResult.bindingFailures,
   };
 };
 
 handlers.set_layout_sizing = function (payload) {
   var node = figma.getNodeById(normalizeNodeId(payload.nodeId));
   if (!node) throw { error: 'NODE_NOT_FOUND', property: 'nodeId', message: 'Node not found: ' + payload.nodeId, available: [], recovery: 'Check nodeId.' };
+  var bt = createBindingTracker();
 
   if (payload.layoutSizingHorizontal) node.layoutSizingHorizontal = payload.layoutSizingHorizontal;
   if (payload.layoutSizingVertical) node.layoutSizingVertical = payload.layoutSizingVertical;
+
+  // Resize when explicit width/height provided
+  if (typeof payload.width === 'number' || typeof payload.height === 'number') {
+    var w = typeof payload.width === 'number' ? payload.width : node.width;
+    var h = typeof payload.height === 'number' ? payload.height : node.height;
+    node.resize(w, h);
+  }
 
   // Max/min constraints
   if (typeof payload.maxWidth === 'number') node.maxWidth = payload.maxWidth;
@@ -885,15 +1395,16 @@ handlers.set_layout_sizing = function (payload) {
 
   // Padding variables
   if (payload.paddingVariable) {
-    bindVariable(node, 'paddingTop', payload.paddingVariable);
-    bindVariable(node, 'paddingRight', payload.paddingVariable);
-    bindVariable(node, 'paddingBottom', payload.paddingVariable);
-    bindVariable(node, 'paddingLeft', payload.paddingVariable);
+    var padOk = bindVariable(node, 'paddingTop', payload.paddingVariable)
+             && bindVariable(node, 'paddingRight', payload.paddingVariable)
+             && bindVariable(node, 'paddingBottom', payload.paddingVariable)
+             && bindVariable(node, 'paddingLeft', payload.paddingVariable);
+    bt.track('paddingVariable', padOk, 'variable "' + payload.paddingVariable + '" not found');
   }
-  if (payload.paddingTopVariable) bindVariable(node, 'paddingTop', payload.paddingTopVariable);
-  if (payload.paddingRightVariable) bindVariable(node, 'paddingRight', payload.paddingRightVariable);
-  if (payload.paddingBottomVariable) bindVariable(node, 'paddingBottom', payload.paddingBottomVariable);
-  if (payload.paddingLeftVariable) bindVariable(node, 'paddingLeft', payload.paddingLeftVariable);
+  if (payload.paddingTopVariable) bt.track('paddingTopVariable', bindVariable(node, 'paddingTop', payload.paddingTopVariable), 'not found');
+  if (payload.paddingRightVariable) bt.track('paddingRightVariable', bindVariable(node, 'paddingRight', payload.paddingRightVariable), 'not found');
+  if (payload.paddingBottomVariable) bt.track('paddingBottomVariable', bindVariable(node, 'paddingBottom', payload.paddingBottomVariable), 'not found');
+  if (payload.paddingLeftVariable) bt.track('paddingLeftVariable', bindVariable(node, 'paddingLeft', payload.paddingLeftVariable), 'not found');
 
   // Raw padding
   if (typeof payload.paddingTop === 'number') node.paddingTop = payload.paddingTop;
@@ -903,16 +1414,20 @@ handlers.set_layout_sizing = function (payload) {
 
   // Gap variable
   if (payload.gapVariable) {
-    bindVariable(node, 'itemSpacing', payload.gapVariable);
+    bt.track('gapVariable', bindVariable(node, 'itemSpacing', payload.gapVariable), 'variable "' + payload.gapVariable + '" not found');
   } else if (typeof payload.gap === 'number') {
     node.itemSpacing = payload.gap;
   }
 
+  var bindingResult = bt.result();
   return {
     nodeId: node.id,
     name: node.name,
     layoutSizingHorizontal: node.layoutSizingHorizontal,
     layoutSizingVertical: node.layoutSizingVertical,
+    applied: bindingResult.applied,
+    warnings: bindingResult.warnings,
+    bindingFailures: bindingResult.bindingFailures,
   };
 };
 
@@ -920,7 +1435,7 @@ handlers.set_visibility = function (payload) {
   var node = figma.getNodeById(normalizeNodeId(payload.nodeId));
   if (!node) throw { error: 'NODE_NOT_FOUND', property: 'nodeId', message: 'Node not found: ' + payload.nodeId, available: [], recovery: 'Check nodeId.' };
 
-  node.visible = payload.visible !== false;
+  node.visible = coerceBool(payload.visible, true);
 
   return {
     nodeId: node.id,
@@ -960,11 +1475,39 @@ handlers.set_variable_mode = function (payload) {
   var collectionName = payload.collectionName;
   var modeIndex = payload.modeIndex || 0;
 
-  // Find the collection by name
+  // Find the collection by name — check both local and library (via cached variables)
   var collections = figma.variables.getLocalVariableCollections();
+
+  // Also collect library collections from cached imported variables
+  var seenIds = {};
+  for (var i = 0; i < collections.length; i++) seenIds[collections[i].id] = true;
+  variableCache.forEach(function (variable) {
+    if (!variable || !variable.variableCollectionId) return;
+    if (seenIds[variable.variableCollectionId]) return;
+    seenIds[variable.variableCollectionId] = true;
+    try {
+      var col = figma.variables.getVariableCollectionById(variable.variableCollectionId);
+      if (col) collections.push(col);
+    } catch (e) { /* skip */ }
+  });
+
   var targetCollection = null;
+  var searchName = collectionName.toLowerCase().replace(/^\d+\.\s*/, '');
+
   for (var i = 0; i < collections.length; i++) {
+    // Exact match
     if (collections[i].name === collectionName) {
+      targetCollection = collections[i];
+      break;
+    }
+    // Fuzzy match: strip leading "N. " prefix, case-insensitive
+    var localName = collections[i].name.toLowerCase().replace(/^\d+\.\s*/, '');
+    if (localName === searchName) {
+      targetCollection = collections[i];
+      break;
+    }
+    // Substring match: collection name contains the search term
+    if (localName.indexOf(searchName) !== -1 || searchName.indexOf(localName) !== -1) {
       targetCollection = collections[i];
       break;
     }
@@ -980,7 +1523,7 @@ handlers.set_variable_mode = function (payload) {
       property: 'collectionName',
       message: 'Variable collection "' + collectionName + '" not found.',
       available: availableNames,
-      recovery: 'Use one of the available collection names.',
+      recovery: 'Use one of the available collection names listed above.',
     };
   }
 
@@ -1007,6 +1550,57 @@ handlers.set_variable_mode = function (payload) {
     collectionName: targetCollection.name,
     modeName: targetCollection.modes[modeIndex].name,
     modeIndex: modeIndex,
+  };
+};
+
+handlers.set_all_variable_modes = async function (payload) {
+  var node = figma.getNodeById(normalizeNodeId(payload.nodeId));
+  if (!node) throw { error: 'NODE_NOT_FOUND', property: 'nodeId', message: 'Node not found: ' + payload.nodeId, available: [], recovery: 'Check nodeId.' };
+
+  var modeIndex = payload.modeIndex || 0;
+  var applied = [];
+  var seenCollections = {};
+
+  // Approach 1: Local collections (own file variables)
+  var localCollections = figma.variables.getLocalVariableCollections();
+  for (var i = 0; i < localCollections.length; i++) {
+    var col = localCollections[i];
+    seenCollections[col.id] = true;
+    var effectiveIndex = Math.min(modeIndex, col.modes.length - 1);
+    var modeId = col.modes[effectiveIndex].modeId;
+    try {
+      node.setExplicitVariableModeForCollection(col, modeId);
+      applied.push({ collection: col.name, mode: col.modes[effectiveIndex].name, modeIndex: effectiveIndex });
+    } catch (e) { /* skip */ }
+  }
+
+  // Approach 2: Library collections (accessed via cached imported variables)
+  // Collect unique collection IDs from the variable cache first
+  var libraryColIds = [];
+  variableCache.forEach(function (variable) {
+    if (!variable || !variable.variableCollectionId) return;
+    if (seenCollections[variable.variableCollectionId]) return;
+    seenCollections[variable.variableCollectionId] = true;
+    libraryColIds.push(variable.variableCollectionId);
+  });
+
+  // Resolve each library collection (use async API to avoid deprecation issues)
+  for (var i = 0; i < libraryColIds.length; i++) {
+    try {
+      var col = await figma.variables.getVariableCollectionByIdAsync(libraryColIds[i]);
+      if (!col) continue;
+      var effectiveIndex = Math.min(modeIndex, col.modes.length - 1);
+      var modeId = col.modes[effectiveIndex].modeId;
+      node.setExplicitVariableModeForCollection(col, modeId);
+      applied.push({ collection: col.name, mode: col.modes[effectiveIndex].name, modeIndex: effectiveIndex });
+    } catch (e) { /* skip */ }
+  }
+
+  return {
+    nodeId: node.id,
+    name: node.name,
+    collectionsApplied: applied.length,
+    collections: applied,
   };
 };
 
@@ -1082,29 +1676,31 @@ handlers.replace_component = function (payload) {
 handlers.restyle_artboard = function (payload) {
   var node = figma.getNodeById(normalizeNodeId(payload.nodeId));
   if (!node) throw { error: 'NODE_NOT_FOUND', property: 'nodeId', message: 'Node not found: ' + payload.nodeId, available: [], recovery: 'Check nodeId.' };
+  var bt = createBindingTracker();
 
   // Name
   if (payload.name) node.name = payload.name;
 
   // Fill
   if (payload.fillVariable) {
-    bindFillVariable(node, payload.fillVariable);
+    bt.track('fillVariable', bindFillVariable(node, payload.fillVariable), 'variable "' + payload.fillVariable + '" not found');
   } else if (payload.fill) {
     applySolidFill(node, payload.fill);
   }
 
   // Stroke
   if (payload.strokeVariable) {
-    bindStrokeVariable(node, payload.strokeVariable);
+    bt.track('strokeVariable', bindStrokeVariable(node, payload.strokeVariable), 'variable "' + payload.strokeVariable + '" not found');
     if (typeof payload.strokeWeight === 'number') node.strokeWeight = payload.strokeWeight;
   }
 
   // Corner radius
   if (payload.cornerRadiusVariable) {
-    bindVariable(node, 'topLeftRadius', payload.cornerRadiusVariable);
-    bindVariable(node, 'topRightRadius', payload.cornerRadiusVariable);
-    bindVariable(node, 'bottomLeftRadius', payload.cornerRadiusVariable);
-    bindVariable(node, 'bottomRightRadius', payload.cornerRadiusVariable);
+    var radOk = bindVariable(node, 'topLeftRadius', payload.cornerRadiusVariable)
+             && bindVariable(node, 'topRightRadius', payload.cornerRadiusVariable)
+             && bindVariable(node, 'bottomLeftRadius', payload.cornerRadiusVariable)
+             && bindVariable(node, 'bottomRightRadius', payload.cornerRadiusVariable);
+    bt.track('cornerRadiusVariable', radOk, 'variable "' + payload.cornerRadiusVariable + '" not found');
   } else if (typeof payload.cornerRadius === 'number') {
     node.cornerRadius = payload.cornerRadius;
   }
@@ -1123,19 +1719,20 @@ handlers.restyle_artboard = function (payload) {
 
   // Padding
   if (payload.paddingVariable) {
-    bindVariable(node, 'paddingTop', payload.paddingVariable);
-    bindVariable(node, 'paddingRight', payload.paddingVariable);
-    bindVariable(node, 'paddingBottom', payload.paddingVariable);
-    bindVariable(node, 'paddingLeft', payload.paddingVariable);
+    var padOk = bindVariable(node, 'paddingTop', payload.paddingVariable)
+             && bindVariable(node, 'paddingRight', payload.paddingVariable)
+             && bindVariable(node, 'paddingBottom', payload.paddingVariable)
+             && bindVariable(node, 'paddingLeft', payload.paddingVariable);
+    bt.track('paddingVariable', padOk, 'variable "' + payload.paddingVariable + '" not found');
   }
-  if (payload.paddingTopVariable) bindVariable(node, 'paddingTop', payload.paddingTopVariable);
-  if (payload.paddingRightVariable) bindVariable(node, 'paddingRight', payload.paddingRightVariable);
-  if (payload.paddingBottomVariable) bindVariable(node, 'paddingBottom', payload.paddingBottomVariable);
-  if (payload.paddingLeftVariable) bindVariable(node, 'paddingLeft', payload.paddingLeftVariable);
+  if (payload.paddingTopVariable) bt.track('paddingTopVariable', bindVariable(node, 'paddingTop', payload.paddingTopVariable), 'not found');
+  if (payload.paddingRightVariable) bt.track('paddingRightVariable', bindVariable(node, 'paddingRight', payload.paddingRightVariable), 'not found');
+  if (payload.paddingBottomVariable) bt.track('paddingBottomVariable', bindVariable(node, 'paddingBottom', payload.paddingBottomVariable), 'not found');
+  if (payload.paddingLeftVariable) bt.track('paddingLeftVariable', bindVariable(node, 'paddingLeft', payload.paddingLeftVariable), 'not found');
 
   // Gap
   if (payload.gapVariable) {
-    bindVariable(node, 'itemSpacing', payload.gapVariable);
+    bt.track('gapVariable', bindVariable(node, 'itemSpacing', payload.gapVariable), 'variable "' + payload.gapVariable + '" not found');
   } else if (typeof payload.gap === 'number') {
     node.itemSpacing = payload.gap;
   }
@@ -1143,11 +1740,15 @@ handlers.restyle_artboard = function (payload) {
   // Clip
   if (typeof payload.clipsContent === 'boolean') node.clipsContent = payload.clipsContent;
 
+  var bindingResult = bt.result();
   return {
     nodeId: node.id,
     name: node.name,
     type: node.type,
     restyled: true,
+    applied: bindingResult.applied,
+    warnings: bindingResult.warnings,
+    bindingFailures: bindingResult.bindingFailures,
   };
 };
 
@@ -1168,6 +1769,25 @@ handlers.move_node = function (payload) {
     name: node.name,
     newParentId: parent.id,
     newParentName: parent.name,
+  };
+};
+
+handlers.set_node_position = function (payload) {
+  var node = figma.getNodeById(normalizeNodeId(payload.nodeId));
+  if (!node) throw { error: 'NODE_NOT_FOUND', property: 'nodeId', message: 'Node not found: ' + payload.nodeId, available: [], recovery: 'Check nodeId.' };
+  if (typeof payload.x !== 'number' || typeof payload.y !== 'number') {
+    throw { error: 'INVALID_POSITION', property: 'x/y', message: 'Numeric x and y are required.', available: [], recovery: 'Provide numeric x and y values.' };
+  }
+
+  node.x = payload.x;
+  node.y = payload.y;
+
+  return {
+    nodeId: node.id,
+    name: node.name,
+    type: node.type,
+    x: node.x,
+    y: node.y,
   };
 };
 
@@ -1681,8 +2301,8 @@ handlers.validate_ds_compliance = function (payload) {
 };
 
 handlers.figma_batch = function (payload) {
-  var operations = payload.operations;
-  if (!Array.isArray(operations) || operations.length === 0) {
+  var operations = coerceArray(payload.operations);
+  if (!operations || operations.length === 0) {
     throw { error: 'MISSING_PARAM', property: 'operations', message: 'operations array is required.', available: [], recovery: 'Provide an array of { type, payload } objects.' };
   }
   if (operations.length > 6) {
@@ -1691,6 +2311,17 @@ handlers.figma_batch = function (payload) {
 
   // Execute sequentially, collecting results
   // Handle both sync and async handlers by chaining promises
+  function packBatchEntry(index, type, resolved) {
+    var entry = { index: index, type: type, result: resolved };
+    // Surface binding feedback from sub-handlers
+    if (resolved && resolved.bindingFailures) {
+      entry.bindingFailures = true;
+      entry.warnings = resolved.warnings;
+      entry.applied = resolved.applied;
+    }
+    return entry;
+  }
+
   function executeSequential(ops, index, results) {
     if (index >= ops.length) return results;
 
@@ -1706,7 +2337,7 @@ handlers.figma_batch = function (payload) {
 
       if (result && typeof result.then === 'function') {
         return result.then(function (resolved) {
-          results.push({ index: index, type: op.type, result: resolved });
+          results.push(packBatchEntry(index, op.type, resolved));
           return executeSequential(ops, index + 1, results);
         }).catch(function (err) {
           var errMsg = err instanceof Error ? err.message : (err.message || err.error || 'Unknown error');
@@ -1714,7 +2345,7 @@ handlers.figma_batch = function (payload) {
           return executeSequential(ops, index + 1, results);
         });
       } else {
-        results.push({ index: index, type: op.type, result: result });
+        results.push(packBatchEntry(index, op.type, result));
         return executeSequential(ops, index + 1, results);
       }
     } catch (err) {
@@ -1727,19 +2358,30 @@ handlers.figma_batch = function (payload) {
   var initialResults = [];
   var outcome = executeSequential(operations, 0, initialResults);
 
-  // If any async operations, outcome is a promise
-  if (outcome && typeof outcome.then === 'function') {
-    return outcome.then(function (results) {
-      return { results: results, count: results.length };
-    });
+  function wrapBatchResults(results) {
+    var hasBindingFailures = false;
+    for (var i = 0; i < results.length; i++) {
+      if (results[i].bindingFailures) { hasBindingFailures = true; break; }
+    }
+    return {
+      results: results,
+      count: results.length,
+      bindingFailures: hasBindingFailures,
+    };
   }
 
-  return { results: outcome, count: outcome.length };
+  // If any async operations, outcome is a promise
+  if (outcome && typeof outcome.then === 'function') {
+    return outcome.then(wrapBatchResults);
+  }
+
+  return wrapBatchResults(outcome);
 };
 
 // ── Message Dispatcher ─────────────────────────────────────────────────────────
 
-figma.showUI(__html__, { width: 120, height: 28, position: { x: 0, y: 0 } });
+// ── UI Position test: hardcoded bottom-right ──
+figma.showUI(__html__, { width: 120, height: 28 });
 
 // Pre-warm font cache on startup — prevents cold-start font loading failures
 figma.loadFontAsync({ family: 'Inter', style: 'Regular' }).catch(function () {});
@@ -1750,6 +2392,7 @@ figma.loadFontAsync({ family: 'Inter', style: 'Medium' }).catch(function () {});
 figma.ui.onmessage = function (msg) {
   // Ignore internal bridge status messages
   if (msg.type === '__bridge_connected' || msg.type === '__bridge_disconnected') return;
+
 
   var id = msg.id;
   var type = msg.type;

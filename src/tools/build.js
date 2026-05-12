@@ -1,14 +1,112 @@
 'use strict';
 
+const { surfaceBindingFeedback } = require('../utils/binding-feedback');
+
 const PHASE_HINT = 'Complete DS Discovery and Style Inventory first (call mimic_discover_ds → preload → figma_set_session_defaults).';
 
+// Element names that likely have DS components.
+// If create_frame is called with one of these, require an explicit primitive override.
+const COMPONENT_FIRST_PATTERNS = [
+  'header', 'footer', 'sidebar', 'sidenav', 'navigation', 'navbar',
+  'top bar', 'bottom bar', 'nav bar', 'app bar',
+  'button', 'card', 'table', 'input', 'textfield', 'text field',
+  'tab', 'tabs', 'badge', 'chip', 'tag', 'pill',
+];
+
+function getComponentFirstMatch(name) {
+  if (!name) return undefined;
+  const lower = name.toLowerCase();
+  return COMPONENT_FIRST_PATTERNS.find(p => lower.includes(p));
+}
+
+function checkComponentFirstGate(args) {
+  const match = getComponentFirstMatch(args?.name);
+  if (!match) return null;
+
+  const confirmed = args.confirmedNoComponent === true;
+  const reason = typeof args.primitiveOverrideReason === 'string'
+    ? args.primitiveOverrideReason.trim()
+    : '';
+
+  if (confirmed && reason.length >= 12) {
+    return {
+      allowed: true,
+      match,
+      warning: `Primitive override accepted for "${args.name}" (${match}): ${reason}`,
+    };
+  }
+
+  return {
+    allowed: false,
+    match,
+    error: 'COMPONENT_FIRST_REQUIRED',
+    message: `"${args?.name}" looks like a DS component candidate ("${match}"). Use mimic_map_components and figma_insert_component first. Only create a primitive frame if the DS/library search confirmed no component exists.`,
+    recovery: {
+      preferred: 'Use mimic_map_components with this element type, then figma_insert_component with the returned componentKey.',
+      fallback: 'If no component exists after library search, retry figma_create_frame with confirmedNoComponent: true and primitiveOverrideReason explaining the gap.',
+      minimumReasonLength: 12,
+    },
+  };
+}
+
+function rectsOverlap(a, b) {
+  return a.x < b.x + b.width
+    && a.x + a.width > b.x
+    && a.y < b.y + b.height
+    && a.y + a.height > b.y;
+}
+
+async function resolvePageLevelPlacement(bridge, args) {
+  if (args.parentId) return { args };
+
+  const page = await bridge.send('get_page_nodes', {});
+  const nodes = Array.isArray(page?.nodes) ? page.nodes : [];
+  const topLevelRects = nodes
+    .filter(n => typeof n.x === 'number' && typeof n.y === 'number' && typeof n.width === 'number' && typeof n.height === 'number')
+    .map(n => ({ ...n, right: n.x + n.width }));
+
+  const rightmost = topLevelRects.length > 0
+    ? Math.max(...topLevelRects.map(n => n.right))
+    : -80;
+  const suggestedX = rightmost + 80;
+  const nextArgs = { ...args };
+  if (typeof nextArgs.x !== 'number') {
+    nextArgs.x = suggestedX;
+  }
+  if (typeof nextArgs.y !== 'number') {
+    nextArgs.y = 0;
+  }
+
+  const proposed = {
+    x: nextArgs.x,
+    y: nextArgs.y,
+    width: nextArgs.width || 100,
+    height: nextArgs.height || 100,
+  };
+  const overlap = topLevelRects.find(n => rectsOverlap(proposed, n));
+  if (overlap) {
+    return {
+      error: {
+        error: 'ARTBOARD_OVERLAP',
+        message: `"${args.name}" would overlap existing top-level node "${overlap.name}". Inspect page nodes and place new artboards to the right of the current canvas.`,
+        overlappingNode: { id: overlap.id, name: overlap.name, x: overlap.x, y: overlap.y, width: overlap.width, height: overlap.height },
+        suggestedX,
+        suggestedY: 0,
+        recovery: 'Retry figma_create_frame with x set to suggestedX, or omit x to auto-place to the right.',
+      },
+    };
+  }
+
+  return { args: nextArgs };
+}
+
 function register(server, context) {
-  const { bridge, buildManifest, session, requirePhase, advancePhase, registerTool } = context;
+  const { bridge, buildManifest, dsCache, session, requirePhase, advancePhase, registerTool } = context;
 
   // ── figma_create_frame ────────────────────────────────────────
   registerTool(
     'figma_create_frame',
-    'Creates an auto-layout frame in Figma. All sizing uses DS variables when available. The name parameter should describe the HTML section or element role (e.g., "Header Section", "Metrics Row", "Card: Revenue"). Meaningful names enable iteration.',
+    'Creates an auto-layout frame in Figma. All sizing uses DS variables when available. The name parameter should describe the HTML section or element role (e.g., "Header Section", "Metrics Row", "Card: Revenue"). Meaningful names enable iteration. IMPORTANT: Before creating frames for section-level elements (header, footer, sidebar), first check if the DS has a component for it via mimic_map_components or Figma MCP search_design_system.',
     {
       type: 'object',
       properties: {
@@ -30,26 +128,54 @@ function register(server, context) {
         primaryAxisAlignItems: { type: 'string', enum: ['MIN', 'CENTER', 'MAX', 'SPACE_BETWEEN'], description: 'Primary axis alignment.' },
         counterAxisAlignItems: { type: 'string', enum: ['MIN', 'CENTER', 'MAX', 'BASELINE'], description: 'Counter axis alignment.' },
         clipsContent: { type: 'boolean', description: 'Clip content to frame bounds.' },
+        x: { type: 'number', description: 'X position in pixels. Required for page-level artboards. Use rightmost existing artboard x + width + 80.' },
+        y: { type: 'number', description: 'Y position in pixels. Defaults to 0 for artboards.' },
         maxWidth: { type: 'number', description: 'Max width constraint.' },
         strokeVariable: { type: 'string', description: 'DS variable path for stroke color.' },
         strokeWeight: { type: 'number', description: 'Stroke weight in pixels.' },
+        confirmedNoComponent: { type: 'boolean', description: 'Set true only after DS/library search confirms no component exists for this role.' },
+        primitiveOverrideReason: { type: 'string', description: 'Required with confirmedNoComponent for component-like primitives. Explain why this frame must be custom.' },
       },
       required: ['name'],
     },
     async (args) => {
       requirePhase(2, PHASE_HINT);
-      const result = await bridge.send('create_frame', args);
+      const componentGate = checkComponentFirstGate(args);
+      if (componentGate && !componentGate.allowed) {
+        return componentGate;
+      }
+      // Validate variable paths before sending to plugin
+      const validation = dsCache.validateVariables(args);
+      if (!validation.valid) {
+        return {
+          error: 'INVALID_VARIABLE_PATHS',
+          warnings: validation.warnings,
+          message: 'Fix the variable paths and try again. Do not proceed with invalid paths.',
+        };
+      }
+      const placement = await resolvePageLevelPlacement(bridge, args);
+      if (placement.error) return placement.error;
+      const createArgs = placement.args;
+      const result = await bridge.send('create_frame', createArgs);
       session.toolCallCount++;
       advancePhase(3);
       const nodeId = result?.nodeId || result?.id;
       // Record top-level sections (direct children of the artboard/content container)
-      if (nodeId && args.parentId) {
-        buildManifest.addSection(args.name || 'unnamed-frame', nodeId, 'frame');
+      if (nodeId && createArgs.parentId) {
+        buildManifest.addSection(createArgs.name || 'unnamed-frame', nodeId, 'frame');
+      } else if (nodeId) {
+        buildManifest.setArtboard(nodeId);
       }
+      surfaceBindingFeedback(result, createArgs.name || 'create_frame');
+
       return {
         nodeId,
         ...result,
-        hint: 'Frame created. Add children with figma_create_text, figma_create_frame, or figma_insert_component.',
+        _placement: !args.parentId ? { x: createArgs.x, y: createArgs.y } : undefined,
+        _componentCheck: componentGate?.warning || undefined,
+        hint: result?.bindingFailures
+          ? 'Frame created but some DS bindings FAILED — check warnings above. Fix before continuing.'
+          : 'Frame created. Add children with figma_create_text, figma_create_frame, or figma_insert_component.',
       };
     }
   );
@@ -76,13 +202,25 @@ function register(server, context) {
     },
     async (args) => {
       requirePhase(2, PHASE_HINT);
+      // Validate variable paths before sending to plugin
+      const validation = dsCache.validateVariables(args);
+      if (!validation.valid) {
+        return {
+          error: 'INVALID_VARIABLE_PATHS',
+          warnings: validation.warnings,
+          message: 'Fix the variable paths and try again. Do not proceed with invalid paths.',
+        };
+      }
       const result = await bridge.send('create_text', args);
       session.toolCallCount++;
       advancePhase(3);
+      surfaceBindingFeedback(result, args.name || 'create_text');
       return {
         nodeId: result?.nodeId || result?.id,
         ...result,
-        hint: 'Text created. Ensure it has a DS text style and color variable applied.',
+        hint: result?.bindingFailures
+          ? 'Text node created but some DS bindings FAILED — check warnings. Text style or color variable may not be applied.'
+          : 'Text node created.',
       };
     }
   );
@@ -107,9 +245,18 @@ function register(server, context) {
     },
     async (args) => {
       requirePhase(2, PHASE_HINT);
+      const validation = dsCache.validateVariables(args);
+      if (!validation.valid) {
+        return {
+          error: 'INVALID_VARIABLE_PATHS',
+          warnings: validation.warnings,
+          message: 'Fix the variable paths and try again. Do not proceed with invalid paths.',
+        };
+      }
       const result = await bridge.send('create_rectangle', args);
       session.toolCallCount++;
       advancePhase(3);
+      surfaceBindingFeedback(result, args.name || 'create_rectangle');
       return {
         nodeId: result?.nodeId || result?.id,
         ...result,
@@ -143,9 +290,18 @@ function register(server, context) {
     },
     async (args) => {
       requirePhase(2, PHASE_HINT);
+      const validation = dsCache.validateVariables(args);
+      if (!validation.valid) {
+        return {
+          error: 'INVALID_VARIABLE_PATHS',
+          warnings: validation.warnings,
+          message: 'Fix the variable paths and try again. Do not proceed with invalid paths.',
+        };
+      }
       const result = await bridge.send('create_ellipse', args);
       session.toolCallCount++;
       advancePhase(3);
+      surfaceBindingFeedback(result, args.name || 'create_ellipse');
       return {
         nodeId: result?.nodeId || result?.id,
         ...result,
@@ -156,29 +312,71 @@ function register(server, context) {
   // ── figma_create_svg ──────────────────────────────────────────
   registerTool(
     'figma_create_svg',
-    'Creates a node from an SVG string in Figma. Useful for icons and custom graphics.',
+    'Creates a node from an SVG string in Figma. Useful for icons and custom graphics. Returns unboundChildren — a list of child nodes that need DS variable bindings. You MUST apply figma_set_node_fill to every unbound vector and figma_set_text_style + figma_set_node_fill to every unbound text. Leaving unbound children breaks DS compliance and light/dark mode.',
     {
       type: 'object',
       properties: {
         name: { type: 'string', description: 'Node name.' },
         parentId: { type: 'string', description: 'Parent node ID.' },
         svgString: { type: 'string', description: 'SVG markup string.' },
-        fillVariable: { type: 'string', description: 'DS variable path for fill override.' },
+        fillVariable: { type: 'string', description: 'DS variable path for fill override (applied to ALL child vectors uniformly).' },
         strokeVariable: { type: 'string', description: 'DS variable path for stroke override.' },
+        layoutSizingHorizontal: { type: 'string', enum: ['FIXED', 'HUG', 'FILL'], description: 'Horizontal sizing mode. Use FILL for charts inside auto-layout containers so they stretch to the container width.' },
+        layoutSizingVertical: { type: 'string', enum: ['FIXED', 'HUG', 'FILL'], description: 'Vertical sizing mode.' },
       },
       required: ['parentId', 'svgString'],
     },
     async (args) => {
       requirePhase(2, PHASE_HINT);
+      const validation = dsCache.validateVariables(args);
+      if (!validation.valid) {
+        return {
+          error: 'INVALID_VARIABLE_PATHS',
+          warnings: validation.warnings,
+          message: 'Fix the variable paths and try again. Do not proceed with invalid paths.',
+        };
+      }
       const result = await bridge.send('create_svg', args);
       session.toolCallCount++;
       advancePhase(3);
+      surfaceBindingFeedback(result, args.name || 'create_svg');
+
+      // ── Build mandatory binding checklist from unbound children ──
+      const unboundChildren = result?.unboundChildren || [];
+      const childSummary = result?.childSummary || {};
+      const checklist = [];
+
+      if (unboundChildren.length > 0) {
+        const unboundVectors = unboundChildren.filter(c => c.type !== 'TEXT');
+        const unboundTexts = unboundChildren.filter(c => c.type === 'TEXT');
+
+        if (unboundVectors.length > 0) {
+          checklist.push({
+            action: 'BIND_VECTOR_FILLS',
+            message: `${unboundVectors.length} vector node(s) have NO DS color variable. Apply figma_set_node_fill to each one. Grid lines → Colors/Border/border-secondary. Data elements → use palette from _chartColorHint.`,
+            nodes: unboundVectors.map(v => ({ nodeId: v.nodeId, type: v.type, name: v.name })),
+          });
+        }
+
+        if (unboundTexts.length > 0) {
+          checklist.push({
+            action: 'BIND_TEXT_STYLES',
+            message: `${unboundTexts.length} text node(s) have NO DS bindings. Apply BOTH figma_set_node_fill (color variable) AND figma_set_text_style (DS text style) to each one. Fill alone is NOT enough — font properties are also hardcoded from SVG.`,
+            nodes: unboundTexts.map(t => ({ nodeId: t.nodeId, name: t.name, characters: t.characters })),
+          });
+        }
+      }
+
       return {
         nodeId: result?.nodeId || result?.id,
         ...result,
+        configurationChecklist: checklist.length > 0 ? checklist : undefined,
+        _bindingStatus: unboundChildren.length === 0
+          ? '✓ All children have DS bindings.'
+          : `⚠ ${unboundChildren.length} child node(s) need DS bindings. See configurationChecklist — this is MANDATORY.`,
       };
     }
   );
 }
 
-module.exports = { register };
+module.exports = { register, checkComponentFirstGate, getComponentFirstMatch };

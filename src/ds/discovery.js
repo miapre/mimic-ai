@@ -83,10 +83,12 @@ class DsDiscovery {
    * @returns {{ found: boolean, componentKey?: string, variant?: object, source?: string } | { found: false, searchTerms: string[] }}
    */
   searchComponent(elementType) {
+    const base = String(elementType || '').toLowerCase().trim();
+
     // Check knowledge store first
     const knownComponents = this.knowledgeStore.data.components;
     for (const [id, recipe] of Object.entries(knownComponents)) {
-      if (id.toLowerCase().includes(elementType.toLowerCase())) {
+      if (id.toLowerCase().includes(base)) {
         return {
           found: true,
           componentKey: recipe.componentKey,
@@ -99,7 +101,7 @@ class DsDiscovery {
     }
 
     // Generate search terms for the element type
-    const searchTerms = this.getSearchTerms(elementType);
+    const searchTerms = this.getSearchTerms(base);
 
     // Collect all matching components from dsCache
     const matches = [];
@@ -133,16 +135,27 @@ class DsDiscovery {
           found: true,
           componentKey: key,
           componentName: component.name,
+          isComponentSet: component.isComponentSet,
           source: 'ds_cache',
           confidence: 'new',
         };
       }
     }
 
+    // Section-level elements (header, footer, sidebar) are high-value DS components
+    // that may exist in the library but not be instantiated on the current page.
+    // The discovery scan only finds page instances — guide explicit library search.
+    const sectionElements = ['header', 'footer', 'sidebar', 'navigation', 'nav', 'topbar', 'bottombar'];
+    const isSection = sectionElements.some(s => base.includes(s));
+
     return {
       found: false,
       searchTerms,
-      message: `No DS component found for "${elementType}". Searched: ${searchTerms.join(', ')}`,
+      message: `No DS component found for "${elementType}" in page instances. Searched: ${searchTerms.join(', ')}`,
+      fallbackRequired: isSection,
+      fallbackHint: isSection
+        ? `"${elementType}" is a section-level element that likely exists in the DS library but was not found on this page. You MUST search the library using Figma MCP search_design_system with terms: ${searchTerms.join(', ')}. Do NOT build a custom ${elementType} without first confirming the DS has no component for it.`
+        : `If a DS component should exist, search the library using Figma MCP search_design_system with terms: ${searchTerms.join(', ')}.`,
     };
   }
 
@@ -164,7 +177,7 @@ class DsDiscovery {
       'table': ['data table', 'grid', 'list'],
       'pagination': ['pager', 'page nav'],
       'header': ['nav', 'navigation', 'top bar', 'app bar', 'navbar'],
-      'footer': ['bottom bar'],
+      'footer': ['bottom bar', 'footer nav', 'footer navigation', 'site footer', 'page footer'],
       'sidebar': ['side nav', 'sidenav', 'side navigation', 'drawer'],
       'avatar': ['profile', 'user icon'],
       'tooltip': ['popover', 'hint'],

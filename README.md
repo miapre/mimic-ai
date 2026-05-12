@@ -203,7 +203,7 @@ Every build enforces 15 quality rules across 6 sequential phases. You don't conf
 
 The result is what you'd build manually, without the time cost.
 
-Full specification: [`GOLDEN_RULES.md`](GOLDEN_RULES.md)
+Full specification: [`GOLDEN_RULES.md`](internal/GOLDEN_RULES.md)
 
 ---
 

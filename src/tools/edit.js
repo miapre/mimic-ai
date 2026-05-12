@@ -1,7 +1,9 @@
 'use strict';
 
+const { surfaceBindingFeedback } = require('../utils/binding-feedback');
+
 function register(server, context) {
-  const { bridge, session, registerTool } = context;
+  const { bridge, dsCache, session, registerTool } = context;
 
   // ── figma_set_text ────────────────────────────────────────────
   registerTool(
@@ -35,8 +37,17 @@ function register(server, context) {
       required: ['nodeId', 'fillVariable'],
     },
     async (args) => {
+      const validation = dsCache.validateVariables(args);
+      if (!validation.valid) {
+        return {
+          error: 'INVALID_VARIABLE_PATHS',
+          warnings: validation.warnings,
+          message: 'Fix the variable paths and try again. Do not proceed with invalid paths.',
+        };
+      }
       const result = await bridge.send('set_node_fill', args);
       session.toolCallCount++;
+      surfaceBindingFeedback(result, 'set_node_fill');
       return { ...result };
     }
   );
@@ -64,8 +75,17 @@ function register(server, context) {
       required: ['nodeId'],
     },
     async (args) => {
+      const validation = dsCache.validateVariables(args);
+      if (!validation.valid) {
+        return {
+          error: 'INVALID_VARIABLE_PATHS',
+          warnings: validation.warnings,
+          message: 'Fix the variable paths and try again. Do not proceed with invalid paths.',
+        };
+      }
       const result = await bridge.send('set_layout_sizing', args);
       session.toolCallCount++;
+      surfaceBindingFeedback(result, 'set_layout_sizing');
       return { ...result };
     }
   );
@@ -112,6 +132,28 @@ function register(server, context) {
     }
   );
 
+  // ── figma_set_all_variable_modes ────────────────────────────────
+  registerTool(
+    'figma_set_all_variable_modes',
+    'Sets the default variable mode on ALL variable collections for a node at once. Use this on every new artboard instead of figma_set_variable_mode — it eliminates collection name guessing.',
+    {
+      type: 'object',
+      properties: {
+        nodeId: { type: 'string', description: 'Node ID (typically the artboard).' },
+        modeIndex: { type: 'number', description: 'Mode index. 0 = default/light, 1 = dark (if available). Defaults to 0.' },
+      },
+      required: ['nodeId'],
+    },
+    async (args) => {
+      const result = await bridge.send('set_all_variable_modes', args);
+      session.toolCallCount++;
+      return {
+        ...result,
+        hint: 'Variable modes set on all collections. DS variables will now render correctly.',
+      };
+    }
+  );
+
   // ── figma_set_text_style ──────────────────────────────────────
   registerTool(
     'figma_set_text_style',
@@ -126,6 +168,26 @@ function register(server, context) {
     },
     async (args) => {
       const result = await bridge.send('set_text_style', args);
+      session.toolCallCount++;
+      return { ...result };
+    }
+  );
+
+  // ── figma_set_node_position ───────────────────────────────────
+  registerTool(
+    'figma_set_node_position',
+    'Sets the absolute x/y position of a node. Use to correct top-level artboard placement after inspecting page nodes.',
+    {
+      type: 'object',
+      properties: {
+        nodeId: { type: 'string', description: 'Node ID to reposition.' },
+        x: { type: 'number', description: 'Absolute x position.' },
+        y: { type: 'number', description: 'Absolute y position.' },
+      },
+      required: ['nodeId', 'x', 'y'],
+    },
+    async (args) => {
+      const result = await bridge.send('set_node_position', args);
       session.toolCallCount++;
       return { ...result };
     }
@@ -187,8 +249,17 @@ function register(server, context) {
       required: ['nodeId'],
     },
     async (args) => {
+      const validation = dsCache.validateVariables(args);
+      if (!validation.valid) {
+        return {
+          error: 'INVALID_VARIABLE_PATHS',
+          warnings: validation.warnings,
+          message: 'Fix the variable paths and try again. Do not proceed with invalid paths.',
+        };
+      }
       const result = await bridge.send('restyle_artboard', args);
       session.toolCallCount++;
+      surfaceBindingFeedback(result, 'restyle_artboard');
       return { ...result };
     }
   );

@@ -18,7 +18,7 @@ function register(server, context) {
       required: ['nodeId'],
     },
     async (args) => {
-      const result = await bridge.send('validate', { nodeId: args.nodeId });
+      const result = await bridge.send('validate_ds_compliance', { nodeId: args.nodeId });
       return result;
     }
   );

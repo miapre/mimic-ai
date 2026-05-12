@@ -1,9 +1,72 @@
 'use strict';
 
 const MAX_BATCH_SIZE = 6;
+const { checkComponentFirstGate } = require('./build');
+
+/**
+ * For insert_component results, build the same configurationChecklist
+ * that the standalone figma_insert_component tool returns.
+ */
+function buildConfigurationChecklist(result) {
+  const configHints = result?.configurationHints || {};
+  const checklist = [];
+
+  // Boolean properties — auto-disabled at insertion by the plugin.
+  // Report which ones were disabled so the builder knows what to re-enable if needed.
+  const disabledBools = result?.disabledBooleans || [];
+  const boolProps = configHints.booleanProperties || {};
+  const boolKeys = Object.keys(boolProps);
+  if (disabledBools.length > 0) {
+    const boolList = disabledBools.map(k => {
+      const displayName = k.includes('#') ? k.split('#')[0].trim() : k;
+      return displayName;
+    });
+    checklist.push({
+      action: 'ENABLE_BOOLEANS_IF_NEEDED',
+      message: `${disabledBools.length} boolean(s) were auto-disabled: ${boolList.join(', ')}. Only re-enable those the source HTML explicitly shows.`,
+      properties: disabledBools,
+    });
+  } else if (boolKeys.length > 0) {
+    const boolList = boolKeys.map(k => {
+      const displayName = k.includes('#') ? k.split('#')[0].trim() : k;
+      return displayName;
+    });
+    checklist.push({
+      action: 'DISABLE_BOOLEANS',
+      message: `Toggle OFF these boolean properties unless the source HTML explicitly shows them: ${boolList.join(', ')}`,
+      properties: boolKeys,
+    });
+  }
+
+  // Text nodes that need overrides
+  const textNodes = configHints.textNodes || [];
+  if (textNodes.length > 0) {
+    const placeholders = textNodes.map(t => `"${t.name}" (current: "${t.characters}")`);
+    checklist.push({
+      action: 'OVERRIDE_ALL_TEXT',
+      message: `Override ALL ${textNodes.length} text node(s) with content from the source HTML. No placeholder text allowed.`,
+      textNodes: placeholders,
+    });
+  }
+
+  // Variant properties
+  const variantProps = configHints.variantProperties || {};
+  if (Object.keys(variantProps).length > 0) {
+    const variantSummary = Object.entries(variantProps).map(([key, val]) =>
+      `${key}: "${val.current}" (options: ${val.values.join(', ')})`
+    );
+    checklist.push({
+      action: 'SET_VARIANTS',
+      message: 'Review and set variant properties to match the source HTML.',
+      variants: variantSummary,
+    });
+  }
+
+  return checklist.length > 0 ? checklist : undefined;
+}
 
 function register(server, context) {
-  const { bridge, session, requirePhase, registerTool } = context;
+  const { bridge, dsCache, session, requirePhase, registerTool } = context;
 
   registerTool(
     'figma_batch',
@@ -44,7 +107,44 @@ function register(server, context) {
       const results = [];
       for (const op of args.operations) {
         try {
-          const result = await bridge.send(op.type, op.payload || {});
+          if (op.type === 'create_frame') {
+            const componentGate = checkComponentFirstGate(op.payload || {});
+            if (componentGate && !componentGate.allowed) {
+              results.push({
+                ok: false,
+                type: op.type,
+                error: componentGate.error,
+                message: componentGate.message,
+                recovery: componentGate.recovery,
+              });
+              session.toolCallCount++;
+              continue;
+            }
+          }
+
+          const payload = { ...(op.payload || {}) };
+          if (op.type === 'insert_component' && payload.componentKey && !payload.importMode && dsCache) {
+            const componentMeta = dsCache.getComponent(payload.componentKey);
+            if (componentMeta && typeof componentMeta.isComponentSet === 'boolean') {
+              payload.importMode = componentMeta.isComponentSet ? 'componentSet' : 'component';
+            }
+          }
+
+          const result = await bridge.send(op.type, payload);
+
+          if (op.type === 'create_frame' && result) {
+            const componentGate = checkComponentFirstGate(op.payload || {});
+            if (componentGate?.allowed) {
+              result._componentCheck = componentGate.warning;
+            }
+          }
+
+          // For insert_component ops, generate the same configurationChecklist
+          // that the standalone figma_insert_component tool returns
+          if (op.type === 'insert_component' && result) {
+            result.configurationChecklist = buildConfigurationChecklist(result);
+          }
+
           results.push({ ok: true, type: op.type, result });
         } catch (err) {
           results.push({

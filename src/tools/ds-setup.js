@@ -1,7 +1,38 @@
 'use strict';
 
+/**
+ * Infer a variable's category from its path, resolved type, and collection name.
+ * Categories: text, background, border, foreground, spacing, radius, etc.
+ */
+function inferCategory(path, resolvedType, collection) {
+  const p = (path || '').toLowerCase();
+  const col = (collection || '').toLowerCase();
+
+  // Spacing / radius from collection name or path
+  if (col.includes('spacing') || p.startsWith('sp-') || p.includes('spacing')) return 'spacing';
+  if (col.includes('radius') || p.startsWith('radius') || p.includes('corner')) return 'radius';
+
+  // Color categories from path prefix or any segment in the path
+  if (resolvedType === 'COLOR') {
+    if (p.startsWith('text-') || p.startsWith('fg-text') || p.includes('/text/') || p.includes('/text-')) return 'text';
+    if (p.startsWith('bg-') || p.startsWith('background') || p.includes('/background/') || p.includes('/bg-')) return 'background';
+    if (p.startsWith('border-') || p.startsWith('stroke') || p.includes('/border/') || p.includes('/border-')) return 'border';
+    if (p.startsWith('fg-') || p.startsWith('foreground') || p.includes('/foreground/') || p.includes('/fg-') || p.startsWith('icon')) return 'foreground';
+    return 'color';
+  }
+
+  if (resolvedType === 'FLOAT') {
+    if (p.includes('spacing') || p.includes('gap') || p.includes('padding')) return 'spacing';
+    if (p.includes('radius') || p.includes('corner')) return 'radius';
+    if (p.includes('size') || p.includes('font')) return 'typography';
+    return 'number';
+  }
+
+  return null;
+}
+
 function register(server, context) {
-  const { bridge, dsCache, dsResolver, session, advancePhase, registerTool } = context;
+  const { bridge, dsCache, dsResolver, knowledgeStore, session, advancePhase, registerTool } = context;
 
   // ── figma_preload_styles ──────────────────────────────────────
   registerTool(
@@ -37,7 +68,7 @@ function register(server, context) {
       const expectedCount = args.expectedCount || null;
       if (expectedCount) session.expectedStyleCount = expectedCount;
       const warning = expectedCount && cached < expectedCount * 0.8
-        ? `Partial load: ${cached}/${expectedCount} styles cached. Some styles may be unavailable. Retry failed styles or proceed with available ones.`
+        ? `Partial load: ${cached}/${expectedCount} styles cached. Proceed with available styles. Missing styles will be flagged in the report.`
         : null;
 
       return {
@@ -79,6 +110,9 @@ function register(server, context) {
       required: ['variables'],
     },
     async (args) => {
+      if (!args.variables || !Array.isArray(args.variables)) {
+        return { error: 'MISSING_VARIABLES', message: 'variables array is required. Use figma_discover_library_variables first to get the variable list.' };
+      }
       for (const v of args.variables) {
         dsCache.addVariable(v.path, {
           key: v.key,
@@ -96,7 +130,7 @@ function register(server, context) {
       const cached = dsCache.variables.size;
       const expectedCount = args.expectedCount || null;
       const warning = expectedCount && cached < expectedCount * 0.8
-        ? `Partial load: ${cached}/${expectedCount} variables cached. Some variables may be unavailable. Retry failed variables or proceed with available ones.`
+        ? `Partial load: ${cached}/${expectedCount} variables cached. Proceed with available variables. Missing variables will be flagged in the report.`
         : null;
 
       return {
@@ -175,7 +209,7 @@ function register(server, context) {
         hint: styles.length === 0
           ? 'No text styles cached. Call figma_preload_styles or figma_discover_library_styles first.'
           : totalExpected && styles.length < totalExpected * 0.8
-            ? `Partial list: ${styles.length}/${totalExpected} styles. Some styles failed to load.`
+            ? `Partial list: ${styles.length}/${totalExpected} styles. Proceed with available styles.`
             : 'Use the style key in figma_create_text or figma_set_text_style.',
       };
     }
@@ -227,12 +261,31 @@ function register(server, context) {
       session.toolCallCount++;
 
       if (result && result.variables) {
+        // Cache in MCP-side dsCache
         for (const v of result.variables) {
-          dsCache.addVariable(v.path || v.name, {
+          const path = v.path || v.name;
+          const category = v.category || inferCategory(path, v.resolvedType, v.collection);
+          dsCache.addVariable(path, {
             key: v.key,
             collection: v.collection || null,
-            category: v.category || null,
+            category,
+            libraryName: v.libraryName || null,
           });
+        }
+
+        // Auto-preload into plugin cache so getVariableByPath() can resolve them.
+        // Without this, bindFillVariable/bindVariable silently fail because
+        // library variables aren't in local collections — they must be imported
+        // via importVariableByKeyAsync and cached.
+        const variableEntries = result.variables
+          .filter(v => v.key)
+          .map(v => ({ path: v.path || v.name, key: v.key }));
+        if (variableEntries.length > 0) {
+          try {
+            await bridge.send('preload_variables', { variables: variableEntries });
+          } catch (e) {
+            // Non-fatal: variables will need manual preload via figma_preload_variables
+          }
         }
       }
 
@@ -240,8 +293,136 @@ function register(server, context) {
       return {
         discovered: result?.variables?.length || 0,
         totalCached: dsCache.variables.size,
+        libraries: result?.libraries || [],
         enforcement,
         hint: 'Variables discovered. Call figma_set_session_defaults to finalize enforcement and advance to build phase.',
+      };
+    }
+  );
+
+  // ── figma_discover_library_components ──────────────────────────
+  registerTool(
+    'figma_discover_library_components',
+    'Scans existing component instances on the current page to discover available DS library components, their keys, and variant properties. Call during DS discovery phase.',
+    {
+      type: 'object',
+      properties: {
+        fileKey: { type: 'string', description: 'Figma file key.' },
+      },
+      required: ['fileKey'],
+    },
+    async (args) => {
+      const result = await bridge.send('discover_library_components', { fileKey: args.fileKey });
+      session.toolCallCount++;
+
+      // Cache discovered components
+      if (result && result.components) {
+        for (const comp of result.components) {
+          dsCache.addComponent(comp.key, {
+            name: comp.name,
+            isRemote: comp.isRemote,
+            isComponentSet: comp.isComponentSet,
+            variantCount: comp.variantCount,
+            variantProperties: comp.variantProperties,
+            description: comp.description,
+          });
+        }
+      }
+
+      return {
+        discovered: result?.totalFound || 0,
+        instancesScanned: result?.totalInstancesScanned || 0,
+        totalCached: dsCache.components.size,
+        components: (result?.components || []).map(c => ({
+          key: c.key,
+          name: c.name,
+          variantCount: c.variantCount,
+          variantProperties: c.variantProperties?.map(vp => vp.name) || [],
+        })),
+        hint: result?.totalFound > 0
+          ? `${result.totalFound} components discovered. Use these keys with figma_insert_component. For components not found here, use Figma MCP search_design_system to find them by name.`
+          : 'No component instances on this page. Use Figma MCP search_design_system to find library components by name (search: button, input, badge, table cell, tabs, avatar, dropdown, textarea).',
+      };
+    }
+  );
+
+  // ── mimic_map_components ──────────────────────────────────────
+  registerTool(
+    'mimic_map_components',
+    'Maps HTML element types to DS component keys. Pass a list of element types found in the HTML (e.g. button, input, table, badge) and get back the matching DS component key for each, ready to use with figma_insert_component.',
+    {
+      type: 'object',
+      properties: {
+        elementTypes: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'List of HTML element types to map (e.g. ["button", "input", "badge", "table", "tab", "avatar", "dropdown", "textarea"]).',
+        },
+      },
+      required: ['elementTypes'],
+    },
+    async (args) => {
+      const { DsDiscovery } = require('../ds/discovery');
+      const discovery = new DsDiscovery(bridge, dsCache, knowledgeStore);
+      if (session.selectedLibraryKey) {
+        discovery.setLibrary(session.selectedLibraryKey);
+      }
+
+      const map = discovery.buildComponentMap(args.elementTypes);
+
+      // If multi-library prompt, return it
+      if (map.multipleLibraries) return map;
+
+      const found = [];
+      const missing = [];
+      for (const [type, result] of Object.entries(map)) {
+        if (result.found) {
+          found.push({
+            elementType: type,
+            componentKey: result.componentKey,
+            componentName: result.componentName || result.recipe?.name,
+            source: result.source,
+            isComponentSet: result.isComponentSet,
+          });
+        } else {
+          missing.push({
+            elementType: type,
+            searchTerms: result.searchTerms || [type],
+            message: result.message,
+            fallbackRequired: Boolean(result.fallbackRequired),
+            fallbackHint: result.fallbackHint,
+          });
+        }
+      }
+
+      session.componentMap = {
+        generatedAt: new Date().toISOString(),
+        requested: args.elementTypes,
+        components: found,
+        notFound: missing,
+      };
+
+      // Identify section-level elements that are missing — these are critical
+      const sectionTypes = ['header', 'footer', 'sidebar', 'navigation', 'nav'];
+      const missingSections = missing.filter(m => sectionTypes.some(s => m.elementType.toLowerCase().includes(s)));
+
+      return {
+        mapped: found.length,
+        missing: missing.length,
+        components: found,
+        notFound: missing.map(m => ({
+          ...m,
+          fallbackHint: m.fallbackHint || `Search the library using Figma MCP search_design_system with terms: ${m.searchTerms.join(', ')}`,
+        })),
+        _componentFirstReminder: missing.length > 0
+          ? `Mimic targets ~90% DS component usage. ${missing.length} element type(s) were not found in page instances but may exist in the DS library. You MUST search the library via Figma MCP search_design_system before building custom frames.`
+          : undefined,
+        _missingSectionWarning: missingSections.length > 0
+          ? `⚠ CRITICAL: ${missingSections.map(m => m.elementType).join(', ')} — section-level elements are almost always in the DS library. Do NOT build custom frames for these without exhaustive library search.`
+          : undefined,
+        hint: missing.length > 0
+          ? `${missing.length} element types not found in page instances. MANDATORY: Search the DS library via Figma MCP search_design_system for: ${missing.map(m => m.elementType).join(', ')}. Do not build custom frames without confirming the DS has no component.`
+          : 'All element types mapped to DS components. Use the componentKey values with figma_insert_component.',
       };
     }
   );
@@ -284,4 +465,4 @@ function register(server, context) {
   );
 }
 
-module.exports = { register };
+module.exports = { register, inferCategory };
