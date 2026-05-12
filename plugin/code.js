@@ -82,21 +82,34 @@ function getVariableByPath(path) {
   if (cached) return cached;
 
   // Search local collections (includes library variables already in the file)
+  // Two passes: exact match first, leaf fallback second — prevents ambiguous matches
   var collections = figma.variables.getLocalVariableCollections();
+  var leafMatch = null;
   for (var c = 0; c < collections.length; c++) {
     var col = collections[c];
     var varIds = col.variableIds;
     for (var v = 0; v < varIds.length; v++) {
       var variable = figma.variables.getVariableById(varIds[v]);
       if (variable) {
-        // Match against full name or just the leaf segment
-        var leafName = variable.name.split('/').pop();
-        if (variable.name === path || leafName === path) {
+        if (variable.name === path) {
           variableCache.set(path, variable);
           return variable;
         }
+        // Track first leaf match as fallback
+        if (!leafMatch) {
+          var leafName = variable.name.split('/').pop();
+          if (leafName === path) {
+            leafMatch = variable;
+          }
+        }
       }
     }
+  }
+
+  // Only use leaf match if no exact match was found
+  if (leafMatch) {
+    variableCache.set(path, leafMatch);
+    return leafMatch;
   }
 
   return null;

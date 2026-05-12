@@ -226,11 +226,12 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       };
     }
 
-    // Inject report reminder into final result when deep into Phase 3
-    // This ensures Claude sees the reminder on every response, not just on status checks
+    // Inject report reminder sparingly — every 10th build op or on status checks
     const buildOps = session.phaseToolCalls[3] || 0;
     if (session.phase >= 3 && session.phase < 5 && buildOps > 0 && typeof result === 'object' && result !== null) {
-      result._reportReminder = 'When the build is done, you MUST call mimic_generate_build_report before responding to the user. The report (DS usage, gaps, patterns, efficiency) is the tool\'s key differentiator.';
+      if (name === 'mimic_status' || buildOps % 10 === 0) {
+        result._reportReminder = 'When the build is done, you MUST call mimic_generate_build_report before responding to the user.';
+      }
     }
 
     return {

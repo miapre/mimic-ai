@@ -170,119 +170,16 @@ The most common cause is wrong variable paths. Call
 Use `mimic_compute_chart` for all chart geometry. NEVER hand-write
 SVG arc paths, trig, or coordinate math — the tool does it all.
 
-Supported types:
-- **line**: data as `{label, value}` or `{x, y}` — returns `pathD`
-- **bar**: data as `{label, value}` — returns scaled heights
-- **donut**: returns `svgPaths[]` with ready-to-use SVG path strings
-  for each segment. `innerRadius` can be absolute px (>1) or
-  ratio (0-1). Center is at `(outerRadius, outerRadius)`.
-  Use the `pathD` from each segment directly in the SVG `<path d="">`.
-- **radar**: `maxValue` auto-derived from data if not provided
-- **scatter**: data as `{x, y}` — normalized to plot dimensions
-- **heatmap**: data as `{row, col, value}` — cell positions
+Supported types: bar, donut, line, radar, scatter, heatmap.
 
-### Chart Build Rules (MANDATORY)
+Every chart response includes `_chartBuildRules` and
+`_chartColorHint` with the full mandatory build workflow.
+**Follow the rules in the tool response** — they cover native
+vs. SVG approach, anti-patterns, and DS color bindings.
 
-Charts are built as single SVGs via `figma_create_svg`. Every
-chart response includes `_chartBuildRules` with the full
-mandatory workflow. Follow ALL rules — they exist because
-the defaults produce broken output.
-
-#### Preferred: Native Auto-Layout Charts (No SVGs)
-
-Build charts with native Figma primitives whenever possible.
-This produces editable, responsive charts that survive
-copy-paste between artboards.
-
-**Bar charts (vertical):**
-- Chart area: HORIZONTAL frame, FILL width, HUG height
-- Per bar: VERTICAL column (FILL width, HUG height,
-  counterAxisAlignItems=CENTER, gap=spacing-xs) containing:
-  1. Spacer rectangle (bg-primary fill, fixed height =
-     maxBarHeight - thisBarHeight) — invisible, pushes bar down
-  2. Bar rectangle (fixed 24px width, fixed height = value,
-     DS color fill, radius-xs)
-  3. Label text (DS text style + DS color)
-- Skip spacer for the tallest bar (height=0 not needed)
-
-**Donut/pie charts:**
-- Container: VERTICAL frame (FILL, HUG, counterAxisAlignItems=CENTER)
-- Ring: NONE-direction frame (fixed 160x160) containing
-  overlapping `create_ellipse` nodes with `arcData`
-  (startingAngle, endingAngle, innerRadius as 0-1 ratio)
-- Legend: HORIZONTAL frame with dot+label pairs below
-
-**Horizontal bar charts:**
-- Per row: HORIZONTAL frame (FILL, HUG, counterAxisAlignItems=CENTER, gap=spacing-sm)
-  containing: label text (fixed width) + bar rectangle
-  (fixed width proportional to value, 8px height, radius-full)
-- No track frame needed — just the colored bar rectangle
-
-**Key rules:**
-- `create_frame` height parameter NOW works (fixed in plugin).
-  `set_layout_sizing` can also resize with width/height params.
-- Rectangles always respect width/height — use them for spacers
-  and bars, not frames.
-- SVG text breaks in Figma (tiny fixed widths, character stacking).
-  Always use native Figma text nodes for labels.
-- For SVG-only elements (complex paths), use vector-only SVGs
-  with NO text, then add Figma text nodes outside the SVG.
-
-#### SVG Fallback Rules (When Native Won't Work)
-
-Use SVGs only for geometry that can't be built with primitives
-(complex paths, radar polygons, scatter with many points).
-
-- Use `<rect height="1" fill="...">` for grid lines — NEVER
-  `<line stroke="...">`. No `figma_set_node_stroke` tool exists.
-- NEVER include `<text>` elements in SVGs — Figma imports them
-  as tiny fixed-width text nodes that break. Use native Figma
-  text nodes outside the SVG instead.
-- SVG nodes MUST use `layoutSizingHorizontal: "FILL"`.
-- After creation, bind ALL vector children to DS variables via
-  `figma_set_node_fill` (grid → border-secondary, data → palette).
-
-#### Line Charts (CRITICAL — DO NOT USE SVG STROKES)
-
-Figma converts SVG `stroke` attributes into thick filled shapes.
-A `<path stroke="..." stroke-width="2">` becomes a solid filled
-blob, NOT a thin line. This makes SVG-based line charts unusable.
-
-**Build line charts natively:**
-1. Container: NONE-direction frame (fixed plotWidth × plotHeight)
-2. Grid lines: horizontal create_rectangle (FILL width × 1px
-   height, border-secondary fill) at each y-axis tick position
-3. Area fill: single SVG `<path>` with fill ONLY (no stroke) —
-   closed polygon from data points down to baseline. Low opacity.
-4. Data points: create_ellipse at each point (6×6px, DS fill)
-5. Axis labels: native Figma text nodes OUTSIDE the chart frame
-
-The area fill SVG MUST be a closed shape: trace all points
-left-to-right → bottom-right corner → bottom-left corner.
-Use `fill="#hex" opacity="0.15"` and NO stroke attribute.
-
-#### Donut/Pie Legends (CRITICAL — NO TEXT DOTS)
-
-NEVER use `●` characters in text nodes for legend color
-indicators. Text nodes inherit a single color — the dots
-cannot be individually colored to match chart segments.
-
-**Build legends as colored indicators:**
-- Per item: HORIZONTAL frame (HUG, gap=spacing-xs, center-aligned)
-  containing: create_rectangle (8×8px, radius-full, DS fill
-  matching segment color) + text node (DS style, text-tertiary)
-- Wrap items in HORIZONTAL frame with gap=spacing-xl
-
-#### Radar Charts (Limited Fidelity)
-
-SVG strokes become filled shapes in Figma, making grid lines
-thick bands. Use ONLY filled polygons with decreasing opacity
-for grids (outermost=0.15 → innermost=0.03). Data polygons:
-filled, low opacity (0.12-0.20), NO stroke.
-
-#### Anti-Patterns (NEVER DO THESE)
-- NEVER use `stroke` in SVGs — produces thick blobs, not lines.
-- NEVER put text in SVGs — renders as stacked characters.
-- NEVER leave SVG vector children without DS fill bindings.
-- NEVER use `●` in text for chart legends — not individually
-  colorable. Use create_rectangle/create_ellipse instead.
+Key principles (details in tool response):
+- Prefer native Figma primitives (frames + rectangles) over SVGs
+- NEVER use `stroke` in SVGs — Figma renders them as thick blobs
+- NEVER put `<text>` in SVGs — use native Figma text nodes
+- NEVER use `●` in text for chart legends — use colored rectangles
+- Bind ALL vector children to DS variables after creation
