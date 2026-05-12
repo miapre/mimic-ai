@@ -1,0 +1,5 @@
+internal/
+*.log
+.DS_Store
+ds-knowledge.json
+mimic/

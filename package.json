@@ -1,6 +1,6 @@
 {
   "name": "@miapre/mimic-ai",
-  "version": "2.0.0-alpha.1",
+  "version": "2.0.0-alpha.2",
   "description": "Mimic AI: MCP server that translates HTML into Figma using your design system",
   "main": "mcp.js",
   "bin": {
