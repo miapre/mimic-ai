@@ -3,6 +3,20 @@
 MCP tool that translates HTML into Figma using the DS present
 on the user's target file. Learns from every build.
 
+## Prerequisites
+
+- **Figma plugin must be running.** In Figma desktop:
+  Plugins > Development > Mimic AI > Run. The bridge
+  connects automatically on first tool call.
+- **fileKey** is the alphanumeric string in the Figma URL:
+  `figma.com/design/<fileKey>/...` — pass it to
+  `mimic_discover_ds`.
+- **Start every build with `mimic_status`.** It returns the
+  current phase and tells you what to do next.
+- **Don't guess variable paths.** Discovery populates the
+  cache. Use `figma_read_variable_values` or
+  `figma_list_text_styles` to see what's available.
+
 ## Component-First Principle
 
 **Target ~90% DS component usage, ~10% primitives with DS

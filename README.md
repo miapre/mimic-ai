@@ -185,11 +185,13 @@ Assets panel > Team library icon > toggle on. Once per file. Community libraries
 
 > *"Build this HTML in Figma using my design system."*
 
+One call discovers your entire DS (variables, styles, components), preloads everything, and advances to build-ready. No multi-step setup.
+
 ---
 
 ## What gets checked automatically
 
-Every build enforces 15 quality rules across 6 sequential phases. You don't configure them. They just run.
+Every build enforces 13 quality rules across 6 sequential phases. You don't configure them. They just run.
 
 - Text uses your text styles, not raw font properties
 - Colors bound to your variables, not hardcoded
@@ -197,13 +199,16 @@ Every build enforces 15 quality rules across 6 sequential phases. You don't conf
 - Every frame uses auto-layout, resizable, not static
 - Content matches the source exactly, nothing invented
 - Your components used wherever a match exists
+- Variable paths validated with suggestions before reaching the plugin
+- Binding feedback on every operation: you see exactly what succeeded
+- Circuit breaker stops runaway builds after 3 consecutive failures
 - Charts built with deterministic geometry and DS tokens
 - Components fully configured: text overrides, semantic properties, icon slots
-- Build report with learning summary and DS gap recommendations
+- Build report with learning summary, component usage %, and DS gap recommendations
 
 The result is what you'd build manually, without the time cost.
 
-Full specification: [`GOLDEN_RULES.md`](internal/GOLDEN_RULES.md)
+Full specification: [`CLAUDE.md`](CLAUDE.md)
 
 ---
 
@@ -298,6 +303,8 @@ MCP Client (Claude Code, Cursor, VS Code)
     v
 MCP Server (intelligence layer)
     - Tool registry, DS cache, knowledge store
+    - Variable validation + suggestions before plugin
+    - Circuit breaker (3 failures → stop + report)
     - Chart geometry engine (Node.js)
     - Phase enforcement (6 sequential phases)
     |
@@ -305,13 +312,14 @@ MCP Server (intelligence layer)
     v
 Figma Plugin (enforcement gate)
     - DS enforcement: rejects raw values when DS has tokens
+    - Binding feedback: reports which bindings succeeded/failed
     - Thin handlers: mechanical operations only
     |
     v
 Figma Plugin API > Canvas
 ```
 
-Intelligence flows down. Enforcement flows up. The MCP layer resolves the right DS values. The plugin refuses anything that isn't a DS value. Tool responses carry contextual hints so the LLM always knows what to do next.
+Intelligence flows down. Binding feedback flows up. The MCP layer validates variable paths before reaching the plugin. The plugin reports exactly which DS bindings succeeded and which failed. Tool responses carry contextual hints so the LLM always knows what to do next.
 
 - **Building is unlimited.** Frames, components, and token bindings have no rate limit.
 - **Inspecting is limited.** Reading your library uses Figma's daily quota. Mimic caches aggressively to stay well under.
@@ -321,17 +329,17 @@ Intelligence flows down. Enforcement flows up. The MCP layer resolves the right 
 </details>
 
 <details>
-<summary><strong>47 tools available</strong></summary>
+<summary><strong>53 tools available</strong></summary>
 
 **Status and learning:** `mimic_status`, `mimic_discover_ds`, `mimic_ai_knowledge_read`, `mimic_ai_knowledge_write`, `mimic_generate_build_report`, `mimic_generate_design_md`
 
-**DS setup:** `figma_preload_styles`, `figma_preload_variables`, `figma_discover_library_styles`, `figma_discover_library_variables`, `figma_set_session_defaults`, `figma_list_text_styles`, `figma_read_variable_values`
+**DS setup:** `figma_preload_styles`, `figma_preload_variables`, `figma_discover_library_styles`, `figma_discover_library_variables`, `figma_discover_library_components`, `figma_set_session_defaults`, `figma_list_text_styles`, `figma_read_variable_values`, `mimic_map_components`
 
 **Build:** `figma_create_frame`, `figma_create_text`, `figma_create_rectangle`, `figma_create_ellipse`, `figma_create_svg`, `figma_insert_component`, `figma_batch`
 
-**Edit:** `figma_set_component_text`, `figma_set_text`, `figma_set_text_style`, `figma_set_node_fill`, `figma_set_layout_sizing`, `figma_set_variant`, `figma_set_visibility`, `figma_set_variable_mode`, `figma_swap_main_component`, `figma_replace_component`, `figma_restyle_artboard`, `figma_move_node`, `figma_delete_node`
+**Edit:** `figma_set_component_text`, `figma_set_component_text_by_id`, `figma_set_text`, `figma_set_text_style`, `figma_set_node_fill`, `figma_set_node_position`, `figma_set_layout_sizing`, `figma_set_variant`, `figma_set_visibility`, `figma_set_variable_mode`, `figma_set_all_variable_modes`, `figma_swap_main_component`, `figma_replace_component`, `figma_restyle_artboard`, `figma_move_node`, `figma_delete_node`
 
-**Inspect and QA:** `figma_get_node_props`, `figma_get_node_children`, `figma_get_node_parent`, `figma_get_text_info`, `figma_get_component_variants`, `figma_get_selection`, `figma_select_node`, `figma_get_page_nodes`, `figma_get_pages`, `figma_change_page`, `figma_validate_ds_compliance`
+**Inspect and QA:** `figma_get_node_props`, `figma_get_node_children`, `figma_get_node_parent`, `figma_get_text_info`, `figma_get_component_variants`, `figma_get_selection`, `figma_select_node`, `figma_get_page_nodes`, `figma_get_pages`, `figma_change_page`, `figma_validate_ds_compliance`, `mimic_find_node`
 
 **Rendering and charts:** `mimic_pipeline_resolve`, `mimic_render_url`, `mimic_compute_chart`
 
