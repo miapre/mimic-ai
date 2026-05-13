@@ -441,7 +441,7 @@ function register(server, context) {
       result._chartBuildRules = {
         preferNative: [
           'PREFER native Figma primitives over SVGs for charts. Bar charts, horizontal bars, and stacked bars work perfectly with auto-layout frames + rectangles.',
-          'Bar charts: HORIZONTAL chart area (FILL, HUG) → VERTICAL columns (FILL, HUG, counterAxisAlignItems=CENTER) → spacer rect (bg-primary, height=maxBar-thisBar) + bar rect (fixed 24w, DS fill, radius-xs) + label text.',
+          'Bar charts: HORIZONTAL chart area (FILL, FIXED height) → individual bar rects with layoutSizingHorizontal=FILL so they distribute evenly across the container width. Each bar gets a fixed height proportional to its value, DS fill, radius-xs. Labels row below with SPACE_BETWEEN alignment.',
           'Donut charts: NONE-direction frame (fixed WxH) with overlapping create_ellipse nodes using arcData (startingAngle, endingAngle, innerRadius 0-1 ratio). Legend as auto-layout below.',
           'Horizontal bars: per row HORIZONTAL frame (FILL, HUG) → label text (fixed width) + bar rectangle (fixed width proportional to value, 8px height, radius-full).',
           'Rectangles ALWAYS respect width/height params. Use them for spacers, bars, and tracks — not frames.',

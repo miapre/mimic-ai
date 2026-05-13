@@ -51,7 +51,7 @@ const session = {
 // Circuit breaker constants
 const MAX_CONSECUTIVE_FAILURES = 3;
 const MAX_PHASE3_CALLS_BEFORE_CHECKPOINT = 20;
-const MAX_PHASE3_CALLS_BEFORE_STOP = 200;
+const MAX_PHASE3_CALLS_BEFORE_STOP = 300;
 
 function requirePhase(minPhase, hint) {
   const { PhaseError } = require('./src/utils/errors');

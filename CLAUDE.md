@@ -135,6 +135,31 @@ manual use if needed, but `mimic_discover_ds` replaces the
     search the library via Figma MCP `search_design_system` before
     building a custom section. Never build a custom footer/header
     without first confirming the DS has no component for it.
+14. Section-level DS components are NON-NEGOTIABLE. When
+    `mimic_map_components` returns a component for header, footer,
+    or sidebar — use it. The HTML layout is irrelevant. The DS
+    component IS the authoritative layout. Override text content
+    to match the HTML, but NEVER build a custom section-level
+    frame when a DS component was found. No rationalizing
+    ("layout doesn't match", "too different from HTML"). Intent
+    over pixel-matching — always.
+15. INSERT_TIMEOUT recovery. When `figma_insert_component`
+    returns INSERT_TIMEOUT, the component MAY have been created.
+    Before doing anything else: wait 3 seconds, then call
+    `figma_get_node_children` on the parent. If the component
+    appears — do NOT retry, proceed with configuration. If it
+    doesn't appear, check once more after 3 seconds. Only retry
+    the insert if the component is confirmed absent after both
+    checks. NEVER retry without checking — duplicates are hard
+    to detect and fix.
+16. Build report presentation. After calling
+    `mimic_generate_build_report`, ALWAYS present a formatted
+    summary to the user. Include: DS component instances table,
+    primitives with justifications, binding quality, efficiency
+    stats (tool calls, cache hits), and DS gap recommendations.
+    The report file is for persistence — the user must SEE the
+    full results in the conversation. A build without a visible
+    report is incomplete.
 
 ## Safety Guardrails
 
@@ -153,7 +178,7 @@ manual use if needed, but `mimic_discover_ds` replaces the
 - **Build checkpoint**: After 20 build operations in Phase 3,
   a checkpoint message prompts you to verify progress before
   continuing.
-- **Build limit**: 200 tool calls in Phase 3 → forced stop.
+- **Build limit**: 300 tool calls in Phase 3 → forced stop.
   Generate the report and assess.
 
 ## Artboard Setup

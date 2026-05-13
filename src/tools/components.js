@@ -38,6 +38,23 @@ function register(server, context) {
       // plugin succeeded, retrying creates duplicate instances (issue #4).
       // Use a generous 180s timeout instead (cold library imports can
       // take 60-90s).
+
+      // ── Dedup guard ─────────────────────────────────────────────
+      // Track pending/timed-out inserts by parentId+componentKey.
+      // If the same insert is attempted while one already timed out,
+      // warn instead of inserting again — prevents duplicates.
+      if (!session._pendingInserts) session._pendingInserts = new Map();
+      const dedupKey = `${args.parentId}:${args.componentKey}`;
+      if (session._pendingInserts.has(dedupKey)) {
+        return {
+          error: 'INSERT_ALREADY_ATTEMPTED',
+          componentKey: args.componentKey,
+          parentId: args.parentId,
+          previousAttempt: session._pendingInserts.get(dedupKey),
+          hint: 'A previous insert for this component+parent timed out. The component likely EXISTS in Figma already. Call figma_get_node_children on the parent to check. Do NOT retry — duplicates are hard to detect and fix.',
+        };
+      }
+
       const componentMeta = dsCache.getComponent(args.componentKey);
       const insertArgs = { ...args };
       if (!insertArgs.importMode && componentMeta && typeof componentMeta.isComponentSet === 'boolean') {
@@ -47,6 +64,8 @@ function register(server, context) {
       let result;
       try {
         result = await bridge.send('insert_component', insertArgs, 180000);
+        // Success — remove from pending if it was there
+        session._pendingInserts.delete(dedupKey);
       } catch (err) {
         const isTimeout = err.message && err.message.includes('timeout');
         if (!isTimeout) {
@@ -54,10 +73,16 @@ function register(server, context) {
           dsCache.markFailed(args.componentKey);
         }
         if (isTimeout) {
+          // Track the timed-out insert so retries are blocked
+          session._pendingInserts.set(dedupKey, {
+            timestamp: Date.now(),
+            componentKey: args.componentKey,
+            parentId: args.parentId,
+          });
           return {
             error: 'INSERT_TIMEOUT',
             componentKey: args.componentKey,
-            hint: 'Component insertion timed out. The component MAY have been created in Figma — check the canvas before retrying. If it exists, use figma_get_node_children on the parent to find it.',
+            hint: 'Component insertion timed out. The component MAY have been created in Figma — check the canvas before retrying. If it exists, use figma_get_node_children on the parent to find it. Do NOT call insert again for this component+parent — a dedup guard will block it.',
           };
         }
         throw err;
