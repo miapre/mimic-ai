@@ -100,7 +100,9 @@ manual use if needed, but `mimic_discover_ds` replaces the
 2. Mandatory components: Buttons, Badges, Input fields, Table
    cells, Table header cells, Tabs, Dropdowns, Textareas, and
    Avatars MUST always use DS components. Never build these as
-   primitives. If import fails, STOP — do not substitute.
+   primitives. If import fails with a non-font error, STOP —
+   do not substitute. Font errors are handled automatically
+   (see "Font-Incompatible Libraries" below).
 3. Text and color are non-negotiable. Every text node: DS text
    style (textStyleId) + DS color variable (fillVariable).
    No exceptions. Use fontSizeVariable ONLY if no text style
@@ -182,6 +184,35 @@ manual use if needed, but `mimic_discover_ds` replaces the
     The report file is for persistence — the user must SEE the
     full results in the conversation. A build without a visible
     report is incomplete.
+
+## Font-Incompatible Libraries
+
+When `figma_insert_component` returns `LIBRARY_FONT_INCOMPATIBLE`,
+the selected library's components require fonts not loaded in the
+file. The tool automatically:
+
+1. Sets `libraryFontIncompatible: true` on the session.
+2. Auto-bypasses the component-first gate — `figma_create_frame`
+   with names like "Button: X" or "Footer Section" will pass
+   without `confirmedNoComponent` / `primitiveOverrideReason`.
+3. Returns a structured error (not a throw) so you can continue.
+
+**When this happens:** proceed with primitives + DS variables
+for all elements. Do NOT retry other components from the same
+library — they will all fail for the same font reason.
+
+## Variable Source Mismatch
+
+Discovery caches variables from whatever libraries are **enabled
+in the file**, not from the selected library. If the selected
+library has no variables in the file, `completenessWarnings`
+will include a `VARIABLE SOURCE MISMATCH` warning listing which
+libraries actually provide the tokens.
+
+This means components come from one library, but colors/spacing/
+radius bindings come from another. This is expected when using
+a component-only library (e.g. Material UI) on a file that has
+a separate token library (e.g. Untitled UI, LayerLens Theme).
 
 ## Safety Guardrails
 
