@@ -9,7 +9,7 @@
   "scripts": {
     "start": "node mcp.js",
     "bridge": "node -e \"require('./src/bridge').startStandalone()\"",
-    "test": "node --test internal/tests/**/*.test.js"
+    "test": "node --test internal/tests/*.test.js internal/tests/**/*.test.js"
   },
   "keywords": [
     "mcp",

@@ -89,6 +89,8 @@ describe('Binding Feedback', () => {
         parentId: 'parent:1',
         fillVariable: 'bg-primary',
         gapVariable: 'sp-xl',
+        confirmedNoComponent: true,
+        primitiveOverrideReason: 'Test fixture — testing binding feedback, not component-first gate',
       });
 
       // Variables must pass MCP validation first — add them to cache
@@ -100,6 +102,8 @@ describe('Binding Feedback', () => {
         parentId: 'parent:1',
         fillVariable: 'bg-primary',
         gapVariable: 'sp-xl',
+        confirmedNoComponent: true,
+        primitiveOverrideReason: 'Test fixture — testing binding feedback, not component-first gate',
       });
 
       assert.equal(result2.bindingFailures, true);

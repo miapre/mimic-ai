@@ -3,12 +3,12 @@
 const { describe, it, beforeEach } = require('node:test');
 const assert = require('node:assert/strict');
 const path = require('node:path');
-const { DsDiscovery } = require('../../../src/ds/discovery');
-const { DsCache } = require('../../../src/ds/cache');
-const { KnowledgeStore } = require('../../../src/knowledge/store');
+const { DsDiscovery } = require('../../src/ds/discovery');
+const { DsCache } = require('../../src/ds/cache');
+const { KnowledgeStore } = require('../../src/knowledge/store');
 const { MockBridge } = require('./helpers/mock-bridge');
-const { DsResolver } = require('../../../src/ds/resolver');
-const { BuildManifest } = require('../../../src/knowledge/manifest');
+const { DsResolver } = require('../../src/ds/resolver');
+const { BuildManifest } = require('../../src/knowledge/manifest');
 
 function createToolContext() {
   const bridge = new MockBridge();
@@ -37,12 +37,12 @@ function createToolContext() {
     },
   };
 
-  require('../../../src/tools/build').register(null, context);
-  require('../../../src/tools/ds-setup').register(null, context);
-  require('../../../src/tools/components').register(null, context);
-  require('../../../src/tools/edit').register(null, context);
-  require('../../../src/tools/learning').register(null, context);
-  require('../../../src/tools/batch').register(null, context);
+  require('../../src/tools/build').register(null, context);
+  require('../../src/tools/ds-setup').register(null, context);
+  require('../../src/tools/components').register(null, context);
+  require('../../src/tools/edit').register(null, context);
+  require('../../src/tools/learning').register(null, context);
+  require('../../src/tools/batch').register(null, context);
 
   return { bridge, dsCache, knowledgeStore, session, handlers };
 }
