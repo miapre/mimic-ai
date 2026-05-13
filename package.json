@@ -1,6 +1,6 @@
 {
   "name": "@miapre/mimic-ai",
-  "version": "2.0.0-alpha.4",
+  "version": "2.0.0-alpha.5",
   "description": "Mimic AI: MCP server that translates HTML into Figma using your design system",
   "main": "mcp.js",
   "bin": {
@@ -11,7 +11,12 @@
     "bridge": "node -e \"require('./src/bridge').startStandalone()\"",
     "test": "node --test internal/tests/**/*.test.js"
   },
-  "keywords": ["mcp", "figma", "design-system", "html-to-figma"],
+  "keywords": [
+    "mcp",
+    "figma",
+    "design-system",
+    "html-to-figma"
+  ],
   "author": "miapre",
   "license": "MIT",
   "engines": {
