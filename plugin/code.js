@@ -637,10 +637,16 @@ handlers.create_frame = function (payload) {
   if (payload.primaryAxisAlignItems) frame.primaryAxisAlignItems = payload.primaryAxisAlignItems;
   if (payload.counterAxisAlignItems) frame.counterAxisAlignItems = payload.counterAxisAlignItems;
 
-  // Sizing — deferred to after appendChild (FILL requires auto-layout parent)
-  // When width/height is set, default to FIXED (not HUG) to preserve dimensions
-  var deferSizingH = payload.layoutSizingHorizontal || (payload.width ? 'FIXED' : 'HUG');
-  var deferSizingV = payload.layoutSizingVertical || (payload.height ? 'FIXED' : 'HUG');
+  // Sizing — deferred to after appendChild (FILL requires auto-layout parent).
+  // Smart defaults: FILL width in AL parents with deterministic width (FIXED/FILL).
+  // HUG parents → children stay HUG (FILL in HUG = collapse to 0).
+  // Explicit width/height → FIXED. Explicit sizing params always win.
+  var parentIsAL = parent && parent.layoutMode && parent.layoutMode !== 'NONE';
+  var parentHasWidth = parentIsAL && (parent.layoutSizingHorizontal === 'FIXED' || parent.layoutSizingHorizontal === 'FILL' || !parent.parent);
+  var deferSizingH = payload.layoutSizingHorizontal
+    || (payload.width ? 'FIXED' : (parentHasWidth ? 'FILL' : 'HUG'));
+  var deferSizingV = payload.layoutSizingVertical
+    || (payload.height ? 'FIXED' : 'HUG');
 
   // Fixed dimensions (for artboards and sized frames)
   if (payload.width || payload.height) {
@@ -849,10 +855,13 @@ handlers.create_text = async function (payload) {
   // Append to parent
   parent.appendChild(text);
 
-  // Apply sizing after appending (requires auto-layout parent)
+  // Apply sizing after appending (requires auto-layout parent).
+  // Default: FILL width in AL parents with deterministic width, HUG otherwise.
+  var parentIsAL = parent && parent.layoutMode && parent.layoutMode !== 'NONE';
+  var parentHasWidth = parentIsAL && (parent.layoutSizingHorizontal === 'FIXED' || parent.layoutSizingHorizontal === 'FILL' || !parent.parent);
   try {
-    if (payload.layoutSizingHorizontal) text.layoutSizingHorizontal = payload.layoutSizingHorizontal;
-    if (payload.layoutSizingVertical) text.layoutSizingVertical = payload.layoutSizingVertical;
+    text.layoutSizingHorizontal = payload.layoutSizingHorizontal
+      || (payload.width ? 'FIXED' : (parentHasWidth ? 'FILL' : 'HUG'));
   } catch (e) { /* Parent isn't auto-layout */ }
 
   // Absolute positioning within AL parent (opt-in overlay)
