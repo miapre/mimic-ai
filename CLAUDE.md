@@ -124,6 +124,15 @@ are real gaps — proceed to build with primitives.
 3. `mimic_map_components({ elementTypes,
    librarySearchResults })` — confirms gaps.
 
+**Community libraries (no file key available):**
+If the selected library is a community file and the user
+can't provide the library file key, re-call
+`mimic_discover_ds` with `skipRestApi: true`. Discovery
+proceeds with plugin-only data (variables + page-scan
+components). Use Figma MCP `search_design_system` +
+`mimic_map_components` two-call workflow to find
+components.
+
 After mapping, missing types are **confirmed gaps** —
 build as primitives with `confirmedNoComponent: true`.
 

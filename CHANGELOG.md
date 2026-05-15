@@ -28,7 +28,24 @@ Complete rewrite from scratch.
 - DS gap tracking with savings estimates across builds
 - Three-trigger learning model (correction → confirmation → auto-promote)
 - ~20 focused source files (was 1 x 203KB monolith)
-- 75 automated tests (was 31)
+- 109 automated tests (was 31)
+
+### 2.0.0-alpha.6 (2026-05-15)
+
+#### Auto-resolve fix for knowledge store
+- `searchComponent()` now skips knowledge store entries with null `componentKey` and falls through to the DS cache
+- Previously, entries learned as gaps (no component found) returned `found: true` with `componentKey: null`, blocking the DS cache search
+- Fixes `mimic_build_table` auto-resolve: table cell/header cell keys are now found from the REST API cache when the knowledge store only has gap entries
+- 4 new tests for `DsDiscovery.searchComponent` covering null-key fallthrough, library filtering, and cache miss
+
+#### Community library support (skipRestApi)
+- New `skipRestApi` parameter on `mimic_discover_ds` allows discovery to proceed without the library file key
+- Community libraries (e.g. Material UI, HeroUI) are accessible via Figma but their file keys are not available to users
+- When set, discovery uses plugin-only data (variables + page-scan components) and skips the REST API component fetch
+- Components are then found via the Figma MCP `search_design_system` + `mimic_map_components` two-call workflow
+- Discovery prompt now mentions the `skipRestApi` escape hatch
+
+#### Test count: 109 (was 105)
 
 ### 2.0.0-alpha.5 (2026-05-13)
 
