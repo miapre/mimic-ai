@@ -289,6 +289,37 @@ function register(server, context) {
         lines.push('');
       }
 
+      // Text override completeness check
+      const textTracker = session.componentTextTracker || new Map();
+      const unoverriddenComponents = [];
+      for (const [compNodeId, tracker] of textTracker) {
+        const missing = tracker.expected.filter(t => {
+          // Check if overridden by exact nodeId OR by text node name
+          return !tracker.overridden.has(t.nodeId) && !tracker.overridden.has(t.name);
+        });
+        if (missing.length > 0) {
+          unoverriddenComponents.push({
+            name: tracker.name,
+            nodeId: compNodeId,
+            total: tracker.expected.length,
+            overridden: tracker.expected.length - missing.length,
+            missing: missing.map(t => `"${t.name}" (still: "${t.defaultText}")`),
+          });
+        }
+      }
+      const unoverriddenCount = unoverriddenComponents.reduce((sum, c) => sum + c.missing.length, 0);
+
+      if (unoverriddenComponents.length > 0) {
+        lines.push(`## ⚠ Unoverridden Text: ${unoverriddenCount} text node(s) in ${unoverriddenComponents.length} component(s) still have default content`);
+        lines.push('');
+        unoverriddenComponents.forEach(c => {
+          lines.push(`- **${c.name}** (${c.overridden}/${c.total} overridden): ${c.missing.join(', ')}`);
+        });
+        lines.push('');
+        lines.push('These text nodes were not set via figma_set_component_text. They likely still show DS placeholder content instead of HTML source text.');
+        lines.push('');
+      }
+
       lines.push(`## Efficiency: ${toolCallCount} tool calls (${cacheHits} from cache)`);
       lines.push('');
 
@@ -356,10 +387,11 @@ function register(server, context) {
       return {
         reportPath,
         bindingFailureCount: bindingFailures.length,
+        unoverriddenTextCount: unoverriddenCount,
         componentUsagePercent,
         componentQualityGate,
         promotions,
-        summary: `Build report for "${screenName}": ${totalInstances} DS component instances, ${primitives.length} primitives, ${componentUsagePercent}% component usage (${componentQualityGate}), ${toolCallCount} tool calls (${cacheHits} cached). ${gapEntries.length} DS gaps identified. ${bindingFailures.length > 0 ? `⚠ ${bindingFailures.length} nodes with binding failures.` : 'All DS bindings succeeded.'}${promotionSummary}`,
+        summary: `Build report for "${screenName}": ${totalInstances} DS component instances, ${primitives.length} primitives, ${componentUsagePercent}% component usage (${componentQualityGate}), ${toolCallCount} tool calls (${cacheHits} cached). ${gapEntries.length} DS gaps identified. ${bindingFailures.length > 0 ? `⚠ ${bindingFailures.length} nodes with binding failures.` : 'All DS bindings succeeded.'}${unoverriddenCount > 0 ? ` ⚠ ${unoverriddenCount} text node(s) not overridden.` : ''}${promotionSummary}`,
       };
     }
   );

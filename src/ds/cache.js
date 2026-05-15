@@ -104,6 +104,74 @@ class DsCache {
     };
   }
 
+  /**
+   * Find a variable by keyword + scope + hint. DS-agnostic lookup.
+   * Searches cached variable paths for the best match.
+   * @param {string} keyword - Part of the variable name (e.g. 'border', 'text')
+   * @param {string} [scope] - Expected scope (e.g. 'STROKE', 'TEXT_FILL')
+   * @param {string} [hint] - Additional keyword for specificity (e.g. 'secondary', 'primary')
+   * @returns {string|null} Best matching variable path
+   */
+  findVariable(keyword, scope, hint) {
+    const needle = keyword.toLowerCase();
+    const hintLower = hint ? hint.toLowerCase() : null;
+    let best = null;
+    let bestScore = 0;
+    for (const [path, info] of this.variables) {
+      const lp = path.toLowerCase();
+      if (!lp.includes(needle)) continue;
+      let score = 1;
+      if (scope && info.scopes && info.scopes.includes(scope)) score += 3;
+      if (hintLower && lp.includes(hintLower)) score += 2;
+      if (info.resolvedType === 'COLOR') score += 1;
+      if (score > bestScore) { bestScore = score; best = path; }
+    }
+    return best;
+  }
+
+  /**
+   * Find a text style by size keyword + weight keyword. DS-agnostic.
+   * @param {string} sizeHint - Size part (e.g. 'xs', 'sm', 'md')
+   * @param {string} weightHint - Weight part (e.g. 'Medium', 'Semibold', 'Bold')
+   * @returns {string|null} Text style key (for textStyleId)
+   */
+  findTextStyle(sizeHint, weightHint) {
+    const sizeLower = sizeHint.toLowerCase();
+    const weightLower = weightHint.toLowerCase();
+    for (const [key, style] of this.textStyles) {
+      const name = (style.name || '').toLowerCase();
+      if (name.includes(sizeLower) && name.includes(weightLower)) return key;
+    }
+    return null;
+  }
+
+  /**
+   * Find a palette of distinct DS color variables for chart data.
+   * Looks for utility/component colors, excludes text/bg/border semantic colors.
+   * @param {number} [count=8] - Number of colors to return
+   * @returns {string[]|null} Array of variable paths, or null if fewer than 3 found
+   */
+  findPalette(count = 8) {
+    const palette = [];
+    const seen = new Set();
+    for (const [path, info] of this.variables) {
+      if (info.resolvedType !== 'COLOR') continue;
+      const lp = path.toLowerCase();
+      // Skip semantic colors (text, background, border)
+      if (lp.includes('/text/') || lp.includes('/background/') || lp.includes('/bg/') || lp.includes('/border/')) continue;
+      // Prefer utility/component colors ending in 500
+      if (lp.includes('500') || lp.includes('primary') || lp.includes('brand')) {
+        const base = lp.replace(/\d+$/, '');
+        if (!seen.has(base)) {
+          seen.add(base);
+          palette.push(path);
+        }
+      }
+      if (palette.length >= count) break;
+    }
+    return palette.length >= 3 ? palette : null;
+  }
+
   clear() {
     this.textStyles.clear();
     this.variables.clear();

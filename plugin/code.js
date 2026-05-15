@@ -2227,28 +2227,29 @@ handlers.change_page = function (payload) {
 
 // ── Stubs for Task 9 — Validation & Batch ──────────────────────────────────────
 
-handlers.validate_library_access = function (payload) {
+handlers.validate_library_access = async function (payload) {
   var candidates = payload.candidates || [];
-  var results = [];
-  var pending = candidates.length;
-  if (pending === 0) return { results: results };
+  if (candidates.length === 0) return { results: [] };
 
-  // Use Promise chain instead of async/await for plugin compatibility
-  var chain = Promise.resolve();
-  for (var i = 0; i < candidates.length; i++) {
-    (function (c) {
-      chain = chain.then(function () {
-        return figma.variables.importVariableByKeyAsync(c.variableKey)
-          .then(function (imported) {
-            results.push({ name: c.name, accessible: !!imported });
-          })
-          .catch(function () {
-            results.push({ name: c.name, accessible: false });
-          });
-      });
-    })(candidates[i]);
+  // Authoritative check: getAvailableLibraryVariableCollectionsAsync returns
+  // ONLY libraries actually added to the file. importVariableByKeyAsync is
+  // unreliable — it succeeds for any team library, even phantom ones.
+  var collections = await figma.teamLibrary.getAvailableLibraryVariableCollectionsAsync();
+  var enabledLibraries = new Set();
+  for (var i = 0; i < collections.length; i++) {
+    if (collections[i].libraryName) {
+      enabledLibraries.add(collections[i].libraryName);
+    }
   }
-  return chain.then(function () { return { results: results }; });
+
+  var results = [];
+  for (var j = 0; j < candidates.length; j++) {
+    results.push({
+      name: candidates[j].name,
+      accessible: enabledLibraries.has(candidates[j].name),
+    });
+  }
+  return { results: results };
 };
 
 handlers.clear_style_cache = function () {

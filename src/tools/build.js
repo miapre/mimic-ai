@@ -234,6 +234,12 @@ function register(server, context) {
           message: 'Fix the variable paths and try again. Do not proceed with invalid paths.',
         };
       }
+      // Default page-level artboards (VERTICAL, no parent) to CENTER
+      // counter-axis alignment so content containers center automatically.
+      if (!args.parentId && (!args.counterAxisAlignItems) &&
+          (!args.direction || args.direction === 'VERTICAL')) {
+        args.counterAxisAlignItems = 'CENTER';
+      }
       const placement = await resolvePageLevelPlacement(bridge, args);
       if (placement.error) return placement.error;
       const createArgs = placement.args;

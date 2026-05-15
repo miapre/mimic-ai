@@ -65,6 +65,9 @@ const session = {
   checkpointIssued: false,
   // Binding failure tracking — accumulated during Phase 3 for the build report
   bindingFailures: [],
+  // Text override tracking — per component instance, tracks expected vs overridden text nodes
+  // Key: component nodeId → { name, expected: [{nodeId, name, defaultText}], overridden: Set<nodeId|name> }
+  componentTextTracker: new Map(),
   // Variable source mismatch confirmation state
   pendingVariableMismatchConfirmation: false,
   variableMismatchSourceLibs: null,
@@ -97,6 +100,7 @@ function resetSession() {
   session.phaseToolCalls = { 0: 0, 1: 0, 2: 0, 3: 0, 4: 0, 5: 0 };
   session.checkpointIssued = false;
   session.bindingFailures = [];
+  session.componentTextTracker = new Map();
   // Community library check state
   session.pendingCommunityCheck = false;
   session.discoveryFileKey = null;
@@ -161,6 +165,7 @@ require('./src/tools/learning').register(server, context);
 require('./src/tools/compliance').register(server, context);
 require('./src/tools/rendering').register(server, context);
 require('./src/tools/table').register(server, context);
+require('./src/tools/chart').register(server, context);
 
 // ── MCP Request Handlers ──────────────────────────────────────────────
 

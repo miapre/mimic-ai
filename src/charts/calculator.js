@@ -278,26 +278,54 @@ class ChartCalculator {
    * @returns {{ vertices: { label: string, value: number, x: number, y: number }[], polygonPoints: string, gridSvg: string, labelPositions: { label: string, x: number, y: number }[] }}
    */
   radar({ data, maxValue: _maxValue, radius, cx, cy, gridLevels = 5 }) {
-    // Auto-derive maxValue from data if not provided
-    const maxValue = _maxValue || Math.max(...data.map((d) => d.value));
+    // Support both single-value ({value}) and multi-series ({values: [v1, v2, ...]}) data.
+    const isMultiSeries = Array.isArray(data[0]?.values);
+    const allValues = isMultiSeries
+      ? data.flatMap((d) => d.values)
+      : data.map((d) => d.value);
+    const maxValue = _maxValue || Math.max(...allValues);
     const n = data.length;
     const angleStep = (Math.PI * 2) / n;
-    // Start from top (-PI/2) so first axis points up
     const startAngle = -Math.PI / 2;
 
-    // Compute vertex positions for the data polygon
-    const vertices = data.map((d, i) => {
-      const angle = startAngle + i * angleStep;
-      const r = (d.value / maxValue) * radius;
-      return {
-        label: d.label,
-        value: d.value,
-        x: cx + r * Math.cos(angle),
-        y: cy + r * Math.sin(angle),
-      };
-    });
+    // Helper: compute polygon vertices for a set of values
+    const computePolygon = (values) =>
+      data.map((d, i) => {
+        const angle = startAngle + i * angleStep;
+        const val = values[i];
+        const r = (val / maxValue) * radius;
+        return {
+          label: d.label,
+          value: val,
+          x: cx + r * Math.cos(angle),
+          y: cy + r * Math.sin(angle),
+        };
+      });
 
-    const polygonPoints = vertices.map((v) => `${v.x},${v.y}`).join(' ');
+    // Compute polygons for each series
+    let series;
+    if (isMultiSeries) {
+      const seriesCount = data[0].values.length;
+      series = [];
+      for (let s = 0; s < seriesCount; s++) {
+        const vals = data.map((d) => d.values[s]);
+        const verts = computePolygon(vals);
+        series.push({
+          index: s,
+          vertices: verts,
+          polygonPoints: verts.map((v) => `${v.x.toFixed(2)},${v.y.toFixed(2)}`).join(' '),
+        });
+      }
+    } else {
+      const verts = computePolygon(data.map((d) => d.value));
+      series = [
+        {
+          index: 0,
+          vertices: verts,
+          polygonPoints: verts.map((v) => `${v.x.toFixed(2)},${v.y.toFixed(2)}`).join(' '),
+        },
+      ];
+    }
 
     // Grid rings (concentric polygons)
     const gridParts = [];
@@ -308,7 +336,7 @@ class ChartCalculator {
         const angle = startAngle + i * angleStep;
         const x = cx + levelRadius * Math.cos(angle);
         const y = cy + levelRadius * Math.sin(angle);
-        ringPoints.push(`${x},${y}`);
+        ringPoints.push(`${x.toFixed(2)},${y.toFixed(2)}`);
       }
       gridParts.push(
         `<polygon points="${ringPoints.join(' ')}" fill="none" stroke="#e0e0e0" stroke-width="1"/>`,
@@ -321,7 +349,7 @@ class ChartCalculator {
       const x = cx + radius * Math.cos(angle);
       const y = cy + radius * Math.sin(angle);
       gridParts.push(
-        `<line x1="${cx}" y1="${cy}" x2="${x}" y2="${y}" stroke="#e0e0e0" stroke-width="1"/>`,
+        `<line x1="${cx}" y1="${cy}" x2="${x.toFixed(2)}" y2="${y.toFixed(2)}" stroke="#e0e0e0" stroke-width="1"/>`,
       );
     }
 
@@ -336,9 +364,11 @@ class ChartCalculator {
       };
     });
 
+    // Backwards-compatible: expose first series as top-level vertices/polygonPoints
     return {
-      vertices,
-      polygonPoints,
+      vertices: series[0].vertices,
+      polygonPoints: series[0].polygonPoints,
+      series,
       gridSvg: gridParts.join('\n'),
       labelPositions,
     };

@@ -295,6 +295,51 @@ Key rules:
 - Column `style` maps to the Table cell's Style variant
   (Text, Lead text, Lead avatar, Badge, etc.).
 
+## Bulk Chart Builder
+
+For any HTML with a chart, use `mimic_build_chart` instead
+of creating elements one by one. It creates the entire chart
+in one tool call: container frame, visualization (SVG or
+native rectangles), axis labels, grid lines, legend — all
+bound to DS variables.
+
+```
+mimic_build_chart({
+  parentId: "container-id",
+  chartType: "bar",           // bar | line | donut | radar
+  title: "Revenue by Month",
+  data: [
+    { label: "Jan", value: 12000 },
+    { label: "Feb", value: 18000 },
+    { label: "Mar", value: 15000 }
+  ],
+  dimensions: { chartHeight: 200 },
+  colors: [
+    "Component colors/Utility/Brand/utility-brand-500",
+    "Component colors/Utility/Success/utility-success-500"
+  ]
+})
+```
+
+Key rules:
+- **Bar charts**: native rectangles in a horizontal frame,
+  bottom-aligned. Dimensions: `{chartHeight, chartWidth?}`.
+- **Line charts**: area fill SVG (closed path, fill only,
+  NO stroke) + thin ribbon for data line + native ellipses
+  for data points. Dimensions: `{plotWidth, plotHeight}`.
+- **Donut charts**: SVG with filled arc segments + legend
+  with colored rectangles (never text dots). Dimensions:
+  `{outerRadius, innerRadius}`.
+- **Radar charts**: SVG with filled polygons only (NO stroke)
+  + native text labels outside SVG. Dimensions: `{radius}`.
+- All text uses DS text styles and color variables.
+- All chart elements bound to DS color variables.
+- Grid lines: 1px tall rectangles with border-secondary fill.
+- For multi-series, pass `seriesNames` for legend labels.
+- Colors fall back to the default utility palette if omitted.
+- Use `mimic_compute_chart` only when you need geometry
+  without building — `mimic_build_chart` handles everything.
+
 ## Font-Incompatible Libraries
 
 When `figma_insert_component` returns `LIBRARY_FONT_INCOMPATIBLE`,

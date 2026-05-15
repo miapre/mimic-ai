@@ -132,6 +132,30 @@ function register(server, context) {
       hints.push('After inserting: override ALL text with figma_set_component_text, set semantic properties, configure icons, hide unused slots.');
 
       const nodeId = result?.nodeId || result?.id;
+
+      // Auto-set FILL width when inserted into an auto-layout parent that
+      // has a deterministic width (FIXED or FILL). Skip when the parent is
+      // HUG — FILL children in a HUG parent create a layout conflict
+      // (buttons collapse, components stretch to 0).
+      if (nodeId && args.parentId) {
+        try {
+          const parentProps = await bridge.send('get_node_props', { nodeId: args.parentId });
+          const parentSizing = parentProps?.layoutSizingHorizontal;
+          const parentHasWidth = parentSizing === 'FIXED' || parentSizing === 'FILL';
+          if (parentHasWidth) {
+            await bridge.send('set_layout_sizing', {
+              nodeId,
+              layoutSizingHorizontal: 'FILL',
+            });
+            result._autoSized = { layoutSizingHorizontal: 'FILL' };
+          } else {
+            result._autoSized = { skipped: true, reason: `parent is ${parentSizing || 'HUG'} — FILL would cause layout conflict` };
+          }
+        } catch (_) {
+          // Non-critical — parent may not be auto-layout
+        }
+      }
+
       // Record component in build manifest
       if (nodeId) {
         buildManifest.addSection(
@@ -145,6 +169,20 @@ function register(server, context) {
       // ── Build explicit configuration checklist from configurationHints ──
       const configHints = result?.configurationHints || {};
       const checklist = [];
+
+      // Track expected text overrides for build report
+      const expectedTextNodes = configHints.textNodes || [];
+      if (nodeId && expectedTextNodes.length > 0) {
+        session.componentTextTracker.set(nodeId, {
+          name: args.name || result?.name || 'unnamed',
+          expected: expectedTextNodes.map(t => ({
+            nodeId: t.nodeId,
+            name: t.name,
+            defaultText: t.characters,
+          })),
+          overridden: new Set(),
+        });
+      }
 
       // Boolean properties — auto-disabled at insertion time by the plugin.
       // The builder only needs to RE-ENABLE booleans the HTML explicitly shows.
@@ -225,6 +263,15 @@ function register(server, context) {
       const result = await bridge.send('set_component_text', args);
       session.toolCallCount++;
       surfaceBindingFeedback(result, 'set_component_text');
+
+      // Track override — match by component nodeId + text node name
+      const tracker = session.componentTextTracker?.get(args.nodeId);
+      if (tracker) {
+        const resultNodeId = result?.nodeId;
+        if (resultNodeId) tracker.overridden.add(resultNodeId);
+        tracker.overridden.add(args.textNodeName);
+      }
+
       return {
         ...result,
         hint: result?.bindingFailures
@@ -253,6 +300,15 @@ function register(server, context) {
       const result = await bridge.send('set_component_text_by_id', args);
       session.toolCallCount++;
       surfaceBindingFeedback(result, 'set_component_text_by_id');
+
+      // Track override — match by component nodeId + exact text node ID
+      const tracker = session.componentTextTracker?.get(args.nodeId);
+      if (tracker) {
+        tracker.overridden.add(args.textNodeId);
+        const resultNodeId = result?.nodeId;
+        if (resultNodeId) tracker.overridden.add(resultNodeId);
+      }
+
       return {
         ...result,
         hint: result?.bindingFailures

@@ -71,6 +71,8 @@ function register(server, context) {
         paddingRightVariable: { type: 'string' },
         gapVariable: { type: 'string', description: 'DS variable for item spacing.' },
         maxWidth: { type: 'number', description: 'Max width constraint.' },
+        primaryAxisAlignItems: { type: 'string', enum: ['MIN', 'CENTER', 'MAX', 'SPACE_BETWEEN'], description: 'Primary axis alignment.' },
+        counterAxisAlignItems: { type: 'string', enum: ['MIN', 'CENTER', 'MAX', 'BASELINE'], description: 'Counter axis alignment.' },
       },
       required: ['nodeId'],
     },

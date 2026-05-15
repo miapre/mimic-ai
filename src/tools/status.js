@@ -416,8 +416,10 @@ function register(server, context) {
             }
           }
 
-          // Ask plugin to validate library access
-          let validatedNames = newLibraries; // fallback: show all if validation fails
+          // Ask plugin to validate library access against
+          // getAvailableLibraryVariableCollectionsAsync (authoritative).
+          // Fallback: reject all — phantom libraries must never leak through.
+          let validatedNames = [];
           if (candidates.length > 0) {
             try {
               const validation = await bridge.send('validate_library_access', { candidates });
@@ -425,14 +427,11 @@ function register(server, context) {
                 const accessible = new Set(
                   validation.results.filter(r => r.accessible).map(r => r.name)
                 );
-                // Only keep libraries that are actually accessible
-                // Also keep libraries we couldn't validate (no variable key found)
-                validatedNames = newLibraries.filter(n => {
-                  const wasValidated = candidates.some(c => c.name === n);
-                  return wasValidated ? accessible.has(n) : true;
-                });
+                // Only keep libraries confirmed accessible by the plugin.
+                // Libraries without a variable key are rejected (no way to validate).
+                validatedNames = newLibraries.filter(n => accessible.has(n));
               }
-            } catch (e) { /* validation failed — fall through to show all */ }
+            } catch (e) { /* validation failed — validatedNames stays empty */ }
           }
 
           if (validatedNames.length > 0) {
