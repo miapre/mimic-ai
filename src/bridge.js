@@ -138,6 +138,113 @@ class Bridge {
     return promise;
   }
 
+  /**
+   * Send a batch of operations to the plugin in one WebSocket message.
+   * The plugin executes them sequentially with $resultOf:N reference resolution.
+   * Auto-chunks at CHUNK_SIZE operations to avoid plugin timeout.
+   *
+   * @param {Array<{type: string, payload: object}>} operations
+   * @param {number} [timeout] - Override timeout per chunk.
+   * @returns {Promise<{results: Array, totalOps: number, succeeded: number, failed: number}>}
+   */
+  sendBatch(operations, timeout) {
+    const CHUNK_SIZE = 200;
+
+    // Normalize node IDs but preserve $resultOf references
+    const normalizedOps = operations.map(op => {
+      const payload = op.payload ? { ...op.payload } : {};
+      for (const key of ['nodeId', 'parentId', 'targetId']) {
+        if (typeof payload[key] === 'string' && !payload[key].startsWith('$resultOf:')) {
+          payload[key] = payload[key].replace(/-/g, ':');
+        }
+      }
+      return { type: op.type, payload };
+    });
+
+    // Single chunk — send directly
+    if (normalizedOps.length <= CHUNK_SIZE) {
+      const effectiveTimeout = timeout ?? (this.defaultTimeout + normalizedOps.length * 150);
+      const msg = this.formatMessage('batch_execute', { operations: normalizedOps });
+
+      return new Promise((resolve, reject) => {
+        if (!this.connected || !this.ws) {
+          this.pendingOps.push({ msg, resolve, reject, timeout: effectiveTimeout });
+          return;
+        }
+        this._dispatch(msg, resolve, reject, effectiveTimeout);
+      });
+    }
+
+    // Multiple chunks — execute sequentially, stitch results
+    return this._sendBatchChunked(normalizedOps, timeout);
+  }
+
+  /**
+   * Internal: split large batch into chunks and execute sequentially.
+   * Cross-chunk $resultOf references are resolved by remapping indices.
+   */
+  async _sendBatchChunked(operations, timeout) {
+    const CHUNK_SIZE = 200;
+    const allResults = [];
+    let offset = 0;
+
+    for (let start = 0; start < operations.length; start += CHUNK_SIZE) {
+      const chunk = operations.slice(start, start + CHUNK_SIZE);
+
+      // Remap $resultOf references: prior-chunk refs resolve to concrete values,
+      // same-chunk refs get re-indexed relative to chunk start.
+      const remapped = chunk.map(op => {
+        const payload = { ...op.payload };
+        for (const key of ['nodeId', 'parentId', 'targetId']) {
+          if (typeof payload[key] === 'string') {
+            const m = payload[key].match(/^\$resultOf:(\d+)(?:\.(.+))?$/);
+            if (m) {
+              const refIdx = parseInt(m[1], 10);
+              if (refIdx < offset) {
+                // Reference points to a prior chunk — resolve with concrete value
+                const field = m[2] || 'nodeId';
+                const prior = allResults[refIdx];
+                payload[key] = (prior && prior.ok && prior.result) ? (prior.result[field] || null) : null;
+              } else {
+                // Reference is within this chunk — remap index
+                const newIdx = refIdx - offset;
+                payload[key] = `$resultOf:${newIdx}${m[2] ? '.' + m[2] : ''}`;
+              }
+            }
+          }
+        }
+        return { type: op.type, payload };
+      });
+
+      const effectiveTimeout = timeout ?? (this.defaultTimeout + remapped.length * 150);
+      const msg = this.formatMessage('batch_execute', { operations: remapped });
+
+      const chunkResult = await new Promise((resolve, reject) => {
+        if (!this.connected || !this.ws) {
+          this.pendingOps.push({ msg, resolve, reject, timeout: effectiveTimeout });
+          return;
+        }
+        this._dispatch(msg, resolve, reject, effectiveTimeout);
+      });
+
+      // Re-index results to global indices
+      const chunkResults = (chunkResult.results || []).map(r => ({
+        ...r,
+        index: r.index + offset,
+      }));
+      allResults.push(...chunkResults);
+      offset += chunk.length;
+    }
+
+    const succeeded = allResults.filter(r => r.ok).length;
+    return {
+      results: allResults,
+      totalOps: allResults.length,
+      succeeded,
+      failed: allResults.length - succeeded,
+    };
+  }
+
   // ── Keepalive ───────────────────────────────────────────────────────
 
   startKeepalive() {
