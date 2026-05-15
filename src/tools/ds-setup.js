@@ -351,7 +351,7 @@ function register(server, context) {
   // ── mimic_map_components ──────────────────────────────────────
   registerTool(
     'mimic_map_components',
-    'Maps HTML element types to DS component keys. Call once to get initial mapping. If components are missing, search the library via Figma MCP search_design_system, then call AGAIN with librarySearchResults to resolve matches and confirm gaps. The second call closes the loop — after it, proceed to build.',
+    'Maps HTML element types to DS component keys. Call once to get initial mapping. If FIGMA_TOKEN is configured (REST API discovery), all library components are already cached — missing types after the first call are confirmed gaps, proceed to build. If REST API is not available (no token), search the library via Figma MCP search_design_system for missing types, then call AGAIN with librarySearchResults to confirm gaps.',
     {
       type: 'object',
       properties: {
@@ -386,10 +386,15 @@ function register(server, context) {
       // If library search results are provided, ingest them into the cache first.
       // This closes the feedback loop: search → ingest → re-map → done.
       let ingested = 0;
-      const searchComplete = Array.isArray(args.librarySearchResults);
-      if (searchComplete) {
+      const hasLibrarySearchResults = Array.isArray(args.librarySearchResults);
+      if (hasLibrarySearchResults) {
         ingested = discovery.ingestLibrarySearchResults(args.librarySearchResults);
       }
+
+      // REST API discovery caches ALL library components — if present,
+      // the first call already has full coverage, so missing = confirmed gap.
+      const hasRestComponents = [...dsCache.components.values()].some(c => c.source === 'rest_api');
+      const searchComplete = hasLibrarySearchResults || hasRestComponents;
 
       const map = discovery.buildComponentMap(args.elementTypes, {
         librarySearchComplete: searchComplete,
@@ -440,6 +445,23 @@ function register(server, context) {
       // After search is complete, all missing types are confirmed gaps — no more searching needed
       if (searchComplete) {
         const newlyFound = ingested > 0 ? found.filter(f => f.source === 'ds_cache') : [];
+
+        // Shell component recommendations — these are structural chrome
+        // that every DS should have. If missing, surface a recommendation.
+        const shellTypes = ['sidebar', 'header', 'footer', 'navigation'];
+        const missingShell = missing.filter(m =>
+          shellTypes.some(s => m.elementType.toLowerCase().includes(s))
+        );
+        const shellRecommendations = missingShell.length > 0
+          ? {
+            _shellRecommendation: {
+              missing: missingShell.map(m => m.elementType),
+              message: `Your DS is missing shell components: ${missingShell.map(m => m.elementType).join(', ')}. These define your app's structural chrome (navigation, layout frame) and should be consistent across all screens.`,
+              recommendation: 'Create these as component sets in your DS library. Shell components ensure every screen built with Mimic uses the same navigation, header, and footer — matching your production app. Once published, Mimic will use them automatically.',
+            },
+          }
+          : {};
+
         return {
           mapped: found.length,
           missing: missing.length,
@@ -453,6 +475,7 @@ function register(server, context) {
             fallbackHint: `No DS component for "${m.elementType}". Build as primitive frame with DS variables. Use confirmedNoComponent: true, primitiveOverrideReason: "No ${m.elementType} component in ${selectedLib || 'DS'} library".`,
           })),
           ...(libSearchNote ? { _libraryConstraint: libSearchNote } : {}),
+          ...shellRecommendations,
           hint: missing.length > 0
             ? `Library search complete. ${found.length} components mapped, ${missing.length} confirmed gaps: ${missing.map(m => m.elementType).join(', ')}. Build these as primitive frames with DS variables — use confirmedNoComponent: true and primitiveOverrideReason for each. Proceed to build.`
             : 'All element types mapped to DS components. Use the componentKey values with figma_insert_component.',

@@ -8,7 +8,26 @@ const { DsCache } = require('./src/ds/cache');
 const { DsResolver } = require('./src/ds/resolver');
 const { KnowledgeStore } = require('./src/knowledge/store');
 const { BuildManifest } = require('./src/knowledge/manifest');
+const { FigmaRest } = require('./src/figma-rest');
 const path = require('node:path');
+const os = require('node:os');
+const fs = require('node:fs');
+
+/**
+ * Resolve FIGMA_TOKEN from multiple sources (first match wins):
+ * 1. process.env.FIGMA_TOKEN (standard MCP env config)
+ * 2. ~/.mimic-ai.json  { "figmaToken": "figd_..." }
+ * 3. null (server starts without REST API — discovery prompts setup)
+ */
+function resolveFigmaToken() {
+  if (process.env.FIGMA_TOKEN) return process.env.FIGMA_TOKEN;
+  try {
+    const configPath = path.join(os.homedir(), '.mimic-ai.json');
+    const cfg = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+    if (cfg.figmaToken) return cfg.figmaToken;
+  } catch { /* file doesn't exist or is invalid — that's fine */ }
+  return null;
+}
 
 /**
  * MCP clients (including Claude Code) may deliver array/object tool arguments
@@ -46,6 +65,10 @@ const session = {
   checkpointIssued: false,
   // Binding failure tracking — accumulated during Phase 3 for the build report
   bindingFailures: [],
+  // Variable source mismatch confirmation state
+  pendingVariableMismatchConfirmation: false,
+  variableMismatchSourceLibs: null,
+  variableSourceConfirmed: null,
 };
 
 // Circuit breaker constants
@@ -80,6 +103,10 @@ function resetSession() {
   session.discoveredLibraries = null;
   session.discoveryResults = null;
   session.completenessWarnings = null;
+  // Variable source mismatch state
+  session.pendingVariableMismatchConfirmation = false;
+  session.variableMismatchSourceLibs = null;
+  session.variableSourceConfirmed = null;
 }
 
 // ── Tool Registry ─────────────────────────────────────────────────────
@@ -98,6 +125,8 @@ const knowledgeStore = new KnowledgeStore(
   path.join(process.cwd(), 'ds-knowledge.json')
 );
 const buildManifest = new BuildManifest();
+const figmaToken = resolveFigmaToken();
+const figmaRest = figmaToken ? new FigmaRest(figmaToken) : null;
 
 // MCP Server
 const server = new Server(
@@ -117,6 +146,7 @@ const context = {
   advancePhase,
   resetSession,
   registerTool,
+  figmaRest,
 };
 
 // Tool registration
@@ -130,6 +160,7 @@ require('./src/tools/batch').register(server, context);
 require('./src/tools/learning').register(server, context);
 require('./src/tools/compliance').register(server, context);
 require('./src/tools/rendering').register(server, context);
+require('./src/tools/table').register(server, context);
 
 // ── MCP Request Handlers ──────────────────────────────────────────────
 

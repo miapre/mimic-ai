@@ -530,9 +530,9 @@ handlers.discover_library_styles = async function (payload) {
     }
   }
 
-  // 2. Scan existing text nodes on the current page for library styles
-  //    Library styles are NOT returned by getLocalTextStyles — they only appear
-  //    when bound to a text node that has been placed in the file.
+  // 2. Scan existing text nodes on the current page for local styles
+  //    Library text styles are now discovered via REST API in the MCP server.
+  //    This page scan catches file-local styles that supplement REST results.
   var page = figma.currentPage;
   var textNodes = page.findAll(function (n) { return n.type === 'TEXT'; });
   for (var i = 0; i < textNodes.length; i++) {
@@ -560,9 +560,9 @@ handlers.discover_library_styles = async function (payload) {
 };
 
 handlers.discover_library_components = async function (payload) {
-  // Scan all component instances on the current page to discover which
-  // DS library components are available. This works because existing builds
-  // (or templates) on the page use library components, giving us their keys.
+  // Scan component instances on the current page for local/non-library components.
+  // Library components are enumerated via REST API in the MCP server.
+  // This page scan catches file-local components and supplements the REST results.
   var page = figma.currentPage;
   var instances = page.findAll(function (n) { return n.type === 'INSTANCE'; });
   var seen = {};
@@ -617,8 +617,8 @@ handlers.discover_library_components = async function (payload) {
     totalFound: components.length,
     totalInstancesScanned: instances.length,
     hint: components.length === 0
-      ? 'No component instances found on this page. Use Figma MCP search_design_system to find library components by name.'
-      : components.length + ' unique components discovered from existing instances on the page.',
+      ? 'No component instances on this page. Library components are discovered via REST API.'
+      : components.length + ' local component instances found on this page.',
   };
 };
 

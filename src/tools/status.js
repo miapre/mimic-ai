@@ -21,7 +21,7 @@ const PHASE_HINTS = {
 };
 
 function register(server, context) {
-  const { bridge, dsCache, knowledgeStore, session, advancePhase, resetSession, registerTool } = context;
+  const { bridge, dsCache, knowledgeStore, session, advancePhase, resetSession, registerTool, figmaRest } = context;
 
   // ── mimic_status ──────────────────────────────────────────────
   registerTool(
@@ -89,6 +89,10 @@ function register(server, context) {
           additionalProperties: { type: 'string' },
           description: 'Map of libraryName → one sample variable key from search results. Used to validate which libraries are actually enabled in the file. Extract one key per library from the color search results.',
         },
+        libraryFileKey: {
+          type: 'string',
+          description: 'Library file key (alphanumeric string from the Figma URL of the library file). Prompted once per library, cached permanently.',
+        },
         externalVariables: {
           type: 'array',
           items: {
@@ -108,6 +112,92 @@ function register(server, context) {
     },
     async (args) => {
       const discovery = new DsDiscovery(bridge, dsCache, knowledgeStore);
+
+      // ── Token gate ──
+      if (!figmaRest) {
+        return {
+          phase: 0,
+          phaseLabel: 'idle',
+          _stopBuild: true,
+          error: 'FIGMA_TOKEN_REQUIRED',
+          _userPrompt:
+            'Mimic needs a Figma access token to read your design system. ' +
+            'This is a one-time setup that takes about 30 seconds. ' +
+            'Once configured, Mimic will automatically discover your components, text styles, and variables on every build.\n\n' +
+            '## Generate the token\n\n' +
+            '1. Open Figma \u2192 click your profile avatar (top-left) \u2192 **Settings**\n' +
+            '2. Go to **Security** \u2192 **Personal access tokens**\n' +
+            '3. Click **Generate new token**\n' +
+            '4. Token name: `Mimic AI`\n' +
+            '5. Expiration: **90 days** (the maximum)\n' +
+            '6. Scopes \u2014 check these five (in the order they appear):\n\n' +
+            '   \u2611 `current_user:read` \u2014 lets Mimic verify the token is valid\n' +
+            '   \u2611 `file_content:read` \u2014 lets Mimic read your file structure\n' +
+            '   \u2611 `file_metadata:read` \u2014 lets Mimic check file access\n' +
+            '   \u2611 `library_assets:read` \u2014 lets Mimic read published component data\n' +
+            '   \u2611 `library_content:read` \u2014 lets Mimic read published styles and variables\n\n' +
+            '   All five are read-only. Mimic never modifies your library files.\n\n' +
+            '7. Click **Generate token** and copy it immediately (starts with `figd_`)\n\n' +
+            '## Add the token\n\n' +
+            'Add FIGMA_TOKEN to your MCP server config:\n\n' +
+            '```json\n' +
+            '{\n' +
+            '  "mcpServers": {\n' +
+            '    "mimic-ai": {\n' +
+            '      "command": "npx",\n' +
+            '      "args": ["-y", "@miapre/mimic-ai"],\n' +
+            '      "env": {\n' +
+            '        "FIGMA_TOKEN": "figd_your-token-here"\n' +
+            '      }\n' +
+            '    }\n' +
+            '  }\n' +
+            '}\n' +
+            '```\n\n' +
+            'If your MCP client doesn\'t pass env vars through, create `~/.mimic-ai.json` instead:\n\n' +
+            '```json\n' +
+            '{ "figmaToken": "figd_your-token-here" }\n' +
+            '```\n\n' +
+            'Then restart the MCP connection and run discovery again. You\'re all set.',
+          hint: 'STOP \u2014 present _userPrompt to the user. Build cannot proceed without FIGMA_TOKEN.',
+        };
+      }
+
+      // ── Token validation (every discovery call) ──
+      try {
+        await figmaRest.validateToken();
+      } catch (e) {
+        const msg = e.message || '';
+        if (msg.includes('FIGMA_TOKEN_INVALID') || msg.includes('401')) {
+          return {
+            phase: 0,
+            phaseLabel: 'idle',
+            _stopBuild: true,
+            error: 'FIGMA_TOKEN_EXPIRED',
+            _userPrompt:
+              'Your Figma access token has expired or is invalid. Tokens last 90 days \u2014 time to generate a fresh one.\n\n' +
+              '1. Figma \u2192 profile avatar (top-left) \u2192 **Settings** \u2192 **Security** \u2192 **Personal access tokens**\n' +
+              '2. **Generate new token** \u2014 name: `Mimic AI`, expiration: 90 days\n' +
+              '3. Scopes \u2014 check these five:\n' +
+              '   \u2611 `current_user:read`\n' +
+              '   \u2611 `file_content:read`\n' +
+              '   \u2611 `file_metadata:read`\n' +
+              '   \u2611 `library_assets:read`\n' +
+              '   \u2611 `library_content:read`\n' +
+              '4. Copy the new token and update FIGMA_TOKEN in your MCP config (or `~/.mimic-ai.json`)\n' +
+              '5. Restart the MCP connection',
+            hint: 'STOP \u2014 token expired. Present _userPrompt to the user.',
+          };
+        }
+        // Network error — non-fatal, proceed with cached data if available
+        if (!msg.includes('FIGMA_NETWORK')) {
+          return {
+            phase: 0, _stopBuild: true,
+            error: msg.split(':')[0],
+            _userPrompt: msg.split(': ').slice(1).join(': '),
+            hint: 'STOP \u2014 present error to user.',
+          };
+        }
+      }
 
       // ── Variable mismatch confirmation flow ─────────────────────
       // If we're waiting for the user to confirm the variable source mismatch,
@@ -502,59 +592,119 @@ function register(server, context) {
         }
       }
 
-      // ── Step 3: Discover text styles ──
+      // ── Step 3: Library file key + REST API discovery ──
+      let componentsCached = 0;
       let stylesCached = 0;
-      try {
-        const styleResult = await bridge.send('discover_library_styles', { fileKey: args.fileKey });
-        if (styleResult && styleResult.styles) {
-          for (const style of styleResult.styles) {
-            dsCache.addTextStyle(style.key, style);
-            stylesCached++;
-          }
-        }
-      } catch (e) { /* non-fatal */ }
 
-      // If a library is selected, check whether it contributed any text styles.
-      // Text styles discovered above come from scanning ALL page text nodes —
-      // they may belong to other libraries. If the selected library has NO
-      // text styles (e.g. MUI uses typography variables, not styles), clear
-      // the cache so enforcement doesn't force usage of another library's styles.
-      if (session.selectedLibraryKey && stylesCached > 0) {
-        // The plugin-discovered libraries list tells us which library has which collections.
-        // If the selected library has NO typography/text collection, its styles are 0.
-        const selectedLib = (varDiscovery.libraries || []).find(l => l.name === session.selectedLibraryKey);
-        const pluginLib = (session.discoveredLibraries || []).find(l => l.name === session.selectedLibraryKey);
-        const lib = selectedLib || pluginLib;
-        // Check if the library has text-style-bearing collections
-        // (heuristic: collection names with "text", "typography", "type", or "font")
-        const hasTextCollections = lib && lib.collections && lib.collections.some(c => {
-          const lower = c.toLowerCase();
-          return lower.includes('text style') || lower === 'text styles';
-        });
-        // If the selected library doesn't have text style collections, the cached
-        // styles belong to other libraries — clear them.
-        if (!hasTextCollections) {
-          dsCache.textStyles.clear();
-          stylesCached = 0;
-          try { await bridge.send('clear_style_cache'); } catch (e) { /* non-fatal */ }
-        }
+      const selectedLib = session.selectedLibraryKey;
+      let libraryFileKey = selectedLib ? knowledgeStore.getLibraryFileKey(selectedLib) : null;
+
+      // If libraryFileKey was provided as a parameter (user responding to prompt), cache it
+      if (args.libraryFileKey && selectedLib) {
+        libraryFileKey = args.libraryFileKey;
+        knowledgeStore.setLibraryFileKey(selectedLib, libraryFileKey);
+        knowledgeStore.save();
       }
 
-      // ── Step 4: Discover components on page ──
-      let componentsCached = 0;
+      // If no library file key and we have a selected library, prompt the user
+      if (selectedLib && !libraryFileKey) {
+        return {
+          phase: session.phase,
+          phaseLabel: PHASE_LABELS[session.phase] || 'discovery',
+          fileKey: args.fileKey,
+          selectedLibraryKey: selectedLib,
+          _stopBuild: true,
+          _needsLibraryFileKey: true,
+          _userPrompt:
+            `Selected library: "${selectedLib}"\n\n` +
+            `To discover all published components and text styles, Mimic needs the library's file key.\n\n` +
+            `Open "${selectedLib}" in Figma. The URL looks like:\n` +
+            `figma.com/design/ [copy this part] /${selectedLib.replace(/\s+/g, '-')}\n\n` +
+            `Paste the file key:`,
+          hint: `STOP \u2014 present _userPrompt to the user. They need to provide the library file key. Then re-call mimic_discover_ds with fileKey and libraryFileKey set to the pasted value.`,
+        };
+      }
+
+      // Fetch components + text styles via REST API
+      if (libraryFileKey && figmaRest) {
+        // Components
+        try {
+          const restComponents = await figmaRest.getFileComponents(libraryFileKey);
+          for (const comp of restComponents) {
+            dsCache.addComponent(comp.key, {
+              name: comp.name,
+              description: comp.description,
+              containingFrame: comp.containingFrame,
+              libraryKey: selectedLib,
+              isRemote: true,
+              source: 'rest_api',
+            });
+            componentsCached++;
+          }
+        } catch (e) {
+          if (e.message.includes('FIGMA_ACCESS_DENIED') || e.message.includes('FIGMA_NOT_FOUND')) {
+            // Community library — fall back to page scan
+            try {
+              const compResult = await bridge.send('discover_library_components', { fileKey: args.fileKey });
+              if (compResult && compResult.components) {
+                for (const comp of compResult.components) {
+                  dsCache.addComponent(comp.key, {
+                    name: comp.name, isRemote: comp.isRemote, isComponentSet: comp.isComponentSet,
+                    variantCount: comp.variantCount, variantProperties: comp.variantProperties,
+                    description: comp.description, source: 'page_scan',
+                  });
+                  componentsCached++;
+                }
+              }
+            } catch (e2) { /* non-fatal */ }
+          } else {
+            return {
+              phase: 0, _stopBuild: true,
+              error: e.message.split(':')[0],
+              _userPrompt: e.message.split(': ').slice(1).join(': '),
+              hint: 'STOP \u2014 present error to user. Fix the issue and retry.',
+            };
+          }
+        }
+
+        // Text styles
+        try {
+          const restStyles = await figmaRest.getFileTextStyles(libraryFileKey);
+          if (restStyles.length > 0) {
+            const styleKeys = restStyles.map(s => s.key);
+            try {
+              const preloadResult = await bridge.send('preload_styles', { styleKeys });
+              if (preloadResult && preloadResult.styles) {
+                for (const style of preloadResult.styles) {
+                  dsCache.addTextStyle(style.key, style);
+                  stylesCached++;
+                }
+              }
+            } catch (e2) { /* styles discovered but not all importable */ }
+            // Cache any REST styles not yet in dsCache
+            for (const s of restStyles) {
+              if (!dsCache.textStyles.has(s.key)) {
+                dsCache.addTextStyle(s.key, { name: s.name, description: s.description, source: 'rest_api' });
+                stylesCached++;
+              }
+            }
+          }
+        } catch (e) { /* non-fatal */ }
+      }
+
+      // Supplemental: scan current page for local components
       try {
         const compResult = await bridge.send('discover_library_components', { fileKey: args.fileKey });
         if (compResult && compResult.components) {
           for (const comp of compResult.components) {
-            dsCache.addComponent(comp.key, {
-              name: comp.name,
-              isRemote: comp.isRemote,
-              isComponentSet: comp.isComponentSet,
-              variantCount: comp.variantCount,
-              variantProperties: comp.variantProperties,
-              description: comp.description,
-            });
-            componentsCached++;
+            if (!dsCache.components.has(comp.key)) {
+              dsCache.addComponent(comp.key, {
+                name: comp.name, isRemote: comp.isRemote, isComponentSet: comp.isComponentSet,
+                variantCount: comp.variantCount, variantProperties: comp.variantProperties,
+                description: comp.description, source: 'page_scan',
+              });
+              componentsCached++;
+            }
           }
         }
       } catch (e) { /* non-fatal */ }
@@ -570,16 +720,45 @@ function register(server, context) {
         });
       } catch (e) { /* non-fatal */ }
 
+      // ── DS change detection ──
+      // Build a fingerprint from component names + style count to detect library updates
+      const dsChanges = [];
+      if (componentsCached > 0 || stylesCached > 0) {
+        const componentNames = [...dsCache.components.values()].map(c => c.name).sort();
+        const newFingerprint = JSON.stringify({ components: componentNames, styleCount: stylesCached });
+        const storedFingerprint = knowledgeStore.data.dsFingerprint;
+
+        if (storedFingerprint && storedFingerprint !== newFingerprint) {
+          // Detect what changed
+          try {
+            const prev = JSON.parse(storedFingerprint);
+            const prevNames = new Set(prev.components || []);
+            const currNames = new Set(componentNames);
+            const added = componentNames.filter(n => !prevNames.has(n));
+            const removed = (prev.components || []).filter(n => !currNames.has(n));
+            if (added.length > 0) dsChanges.push(`New components since last build: ${added.join(', ')}`);
+            if (removed.length > 0) dsChanges.push(`Removed components since last build: ${removed.join(', ')}`);
+            if (prev.styleCount !== stylesCached) dsChanges.push(`Text styles changed: ${prev.styleCount || 0} \u2192 ${stylesCached}`);
+          } catch (e) { dsChanges.push('DS library updated since last build.'); }
+        }
+
+        // Always update fingerprint
+        knowledgeStore.setFingerprint(newFingerprint);
+        knowledgeStore.save();
+      }
+
       // Completeness warnings
       const completenessWarnings = [];
       if (variablesCached > 0 && variablesPreloaded < variablesCached * 0.8) {
         completenessWarnings.push(`Variables: only ${variablesPreloaded}/${variablesCached} preloaded into plugin. Some bindings may fail.`);
       }
       if (stylesCached === 0 && enforcement.enforceTextStyles) {
-        completenessWarnings.push('No text styles found. Text style enforcement is ON but has no styles to offer.');
+        completenessWarnings.push('No text styles found in the library. Check that text styles are published.');
       }
-      if (componentsCached === 0) {
-        completenessWarnings.push('No components found on page. Use Figma MCP search_design_system to find them (search: button, input, badge, table cell, tabs, avatar, dropdown, textarea).');
+      if (componentsCached === 0 && libraryFileKey) {
+        completenessWarnings.push('No published components found in the library. Check that components are published (not just local).');
+      } else if (componentsCached === 0 && !libraryFileKey) {
+        completenessWarnings.push('No components discovered \u2014 library file key not provided.');
       }
 
       session.toolCallCount++;
@@ -693,10 +872,12 @@ function register(server, context) {
           },
           enforcement: session.enforcementProfile,
           completenessWarnings,
+          dsChanges: dsChanges.length > 0 ? dsChanges : undefined,
           _libraryConstraint: `ALL components and Figma MCP searches must use ONLY "${session.selectedLibraryKey}". Never mix design systems.`,
-          hint: completenessWarnings.length > 0
+          hint: (dsChanges.length > 0 ? `DS UPDATED: ${dsChanges.join(' | ')}. ` : '') +
+            (completenessWarnings.length > 0
             ? `Discovery complete with ${completenessWarnings.length} warning(s). Review completenessWarnings. Selected library: "${session.selectedLibraryKey}" — use ONLY this library for all components and searches. NEXT: Call mimic_map_components with ALL section-level elements in your design (header, footer, sidebar, etc.) to find DS components BEFORE building. Target ~90% component usage.`
-            : `Discovery complete. ${variablesCached} variables, ${stylesCached} text styles, ${componentsCached} components. Enforcement: ${dsMode}. Selected library: "${session.selectedLibraryKey}" — use ONLY this library for all components and searches. NEXT: Call mimic_map_components with ALL section-level elements in your design (header, footer, sidebar, etc.) to find DS components BEFORE building. Target ~90% component usage.`,
+            : `Discovery complete. ${variablesCached} variables, ${stylesCached} text styles, ${componentsCached} components. Enforcement: ${dsMode}. Selected library: "${session.selectedLibraryKey}" — use ONLY this library for all components and searches. NEXT: Call mimic_map_components with ALL section-level elements in your design (header, footer, sidebar, etc.) to find DS components BEFORE building. Target ~90% component usage.`),
         };
       }
 

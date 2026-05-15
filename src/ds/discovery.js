@@ -186,7 +186,7 @@ class DsDiscovery {
       'radio': ['radio button', 'option'],
       'toggle': ['switch'],
       'breadcrumb': ['breadcrumbs', 'path'],
-      'divider': ['separator', 'line'],
+      'divider': ['content divider', 'separator', 'line', 'rule'],
       'progress': ['progress bar', 'loader', 'spinner'],
       'alert': ['banner', 'notification', 'toast', 'snackbar'],
     };

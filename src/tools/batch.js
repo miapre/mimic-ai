@@ -108,7 +108,7 @@ function register(server, context) {
       for (const op of args.operations) {
         try {
           if (op.type === 'create_frame') {
-            const componentGate = checkComponentFirstGate(op.payload || {});
+            const componentGate = checkComponentFirstGate(op.payload || {}, dsCache, session);
             if (componentGate && !componentGate.allowed) {
               results.push({
                 ok: false,
@@ -133,7 +133,7 @@ function register(server, context) {
           const result = await bridge.send(op.type, payload);
 
           if (op.type === 'create_frame' && result) {
-            const componentGate = checkComponentFirstGate(op.payload || {});
+            const componentGate = checkComponentFirstGate(op.payload || {}, dsCache, session);
             if (componentGate?.allowed) {
               result._componentCheck = componentGate.warning;
             }

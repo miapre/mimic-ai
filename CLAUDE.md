@@ -5,6 +5,21 @@ on the user's target file. Learns from every build.
 
 ## Prerequisites
 
+- **FIGMA_TOKEN** must be set in the MCP server config
+  (or in `~/.mimic-ai.json` as fallback). Without it,
+  Mimic cannot read the library's components or text
+  styles. Generate one in Figma: avatar (top-left) →
+  Settings → Security → Personal access tokens →
+  "Generate new token" (name: "Mimic AI", 90-day
+  expiration). Five scopes required (all read-only):
+  `current_user:read`, `file_content:read`,
+  `file_metadata:read`, `library_assets:read`,
+  `library_content:read`. Mimic validates the token on
+  every build and guides users through setup or renewal
+  if missing/expired.
+- **Library file key** is prompted once per library and
+  cached permanently. The user copies it from the library
+  file's URL: `figma.com/design/<this-part>/...`
 - **Figma plugin must be running.** In Figma desktop:
   Plugins > Development > Mimic AI > Run. The bridge
   connects automatically on first tool call.
@@ -93,24 +108,24 @@ were not found on the page, use Figma MCP
 After discovery, call `mimic_map_components` with the HTML
 element types to get the exact component keys for the build.
 
-**Component mapping is a TWO-CALL workflow:**
+**Component mapping workflow:**
 
-1. **First call:** `mimic_map_components({ elementTypes })` —
-   returns found components + missing types with search terms.
-2. **Search once:** For missing types, call Figma MCP
-   `search_design_system` with the suggested terms. Collect
-   ALL component results (from any library — tool filters).
-   Do ONE search per missing type, not exhaustive loops.
-3. **Second call:** `mimic_map_components({ elementTypes,
-   librarySearchResults: [...all results...] })` — ingests
-   results, re-maps, and confirms gaps. After this call,
-   missing types are **confirmed gaps** — build them as
-   primitives with `confirmedNoComponent: true`. No more
-   searching. Proceed to build.
+**With FIGMA_TOKEN (recommended):** One call is enough.
+REST API discovery caches ALL library components, so
+`mimic_map_components({ elementTypes })` returns found
+components + confirmed gaps immediately. Missing types
+are real gaps — proceed to build with primitives.
 
-**Do NOT loop.** Two calls max. If the second call still
-shows missing types, they are confirmed gaps — build with
-primitives.
+**Without FIGMA_TOKEN (fallback — two calls):**
+1. `mimic_map_components({ elementTypes })` — returns
+   found + missing with search terms.
+2. Search via Figma MCP `search_design_system`. One
+   search per missing type.
+3. `mimic_map_components({ elementTypes,
+   librarySearchResults })` — confirms gaps.
+
+After mapping, missing types are **confirmed gaps** —
+build as primitives with `confirmedNoComponent: true`.
 
 The individual tools (`figma_discover_library_styles`,
 `figma_discover_library_variables`, etc.) still exist for
@@ -121,6 +136,13 @@ manual use if needed, but `mimic_discover_ds` replaces the
 
 1. Components first. If the DS has it, use it — even if the
    layout doesn't match exactly. Intent over pixel-matching.
+   **Shell components (sidebar, header, footer) are
+   non-negotiable.** If the DS has them, use them — ignore
+   the HTML's layout for these elements entirely. The DS
+   component IS the canonical layout. Adapt the HTML content
+   (text, links, icons) to fit inside the DS component's
+   structure. If the DS doesn't have shell components,
+   `mimic_map_components` will recommend creating them.
 2. Mandatory components: Buttons, Badges, Input fields, Table
    cells, Table header cells, Tabs, Dropdowns, Textareas, and
    Avatars MUST always use DS components. Never build these as
@@ -146,26 +168,35 @@ manual use if needed, but `mimic_discover_ds` replaces the
       SET_VARIANTS actions. Do ALL of them.
    b. **Booleans are auto-disabled at insertion time.** The
       plugin turns OFF all boolean properties (hint text,
-      help icons, trailing icons, asterisks, etc.) when a
-      component is inserted. You only need to RE-ENABLE
-      booleans that the source HTML explicitly shows. If the
-      HTML has no icons, no hint text, no asterisks — do
-      nothing. The component is already clean.
+      help icons, trailing icons, asterisks, labels, etc.)
+      when a component is inserted. You MUST RE-ENABLE
+      booleans that the source HTML explicitly shows.
+      **Labels are booleans too.** If the HTML shows a label
+      adjacent to an input/select/textarea, check if the
+      component has a Label boolean — enable it and set the
+      label text via `figma_set_component_text` instead of
+      creating a separate text node. Same for hint text,
+      icons, and any other boolean-controlled slot.
    c. Set the correct variant properties via
       `figma_set_variant`. Always check what the current
       values are and change any that don't match the HTML.
    d. Override ALL text via `figma_set_component_text`. Use
       the `textNodes` list — every node listed must get real
       content from the HTML. No placeholder text ever.
-   e. Set layoutSizingHorizontal to FILL when the component
-      should stretch to fill its container.
+   e. **Set layoutSizingHorizontal to FILL.** This is the
+      default for every component inside an auto-layout
+      container. Only use HUG/FIXED when the HTML explicitly
+      constrains the element width (e.g. a small inline
+      button). When in doubt, FILL.
    CRITICAL: If `disabledBooleans` is empty in the response,
    auto-disable did not run — manually disable all booleans
    the HTML doesn't show.
-8. Dividers and separators: search for a DS component first
-   (e.g. "Content divider"). Never use raw rectangles for
-   visual separators. After inserting, check variantProperties
-   for the right type, override any text, and set FILL width.
+8. Dividers and separators: ALWAYS search for a DS component
+   first. Search terms: "content divider", "divider",
+   "separator". Never use raw rectangles for visual
+   separators — if the DS has a divider component, use it.
+   After inserting, set FILL width, check variantProperties
+   for the right type, and override any text.
 9. HTML is the source of truth for content. Same text, same
    structure, same order. Don't invent or improve.
 10. Feedback means iterate the existing artboard.
@@ -206,6 +237,54 @@ manual use if needed, but `mimic_discover_ds` replaces the
     The report file is for persistence — the user must SEE the
     full results in the conversation. A build without a visible
     report is incomplete.
+
+## Bulk Table Builder
+
+For any HTML with a data table, use `mimic_build_table` instead
+of inserting cells one by one. It creates the entire table in
+one tool call: column frames, header cells, data cells, all
+configured with variants, text, and consistent height.
+
+```
+mimic_build_table({
+  parentId: "container-id",
+  cellHeight: 72,
+  columns: [
+    { header: "Name", style: "Lead avatar", supportingText: true },
+    { header: "Status", style: "Badge", cellVariants: {
+      "Active": { "Color": "Success" },
+      "Pending": { "Color": "Warning" },
+      "Inactive": { "Color": "Gray" }
+    }},
+    { header: "Role", style: "Text" },
+    { header: "Department", style: "Text" },
+    { header: "Last active", style: "Text" }
+  ],
+  rows: [
+    ["Sarah Chen|sarah@co.com", "Active", "Admin", "Engineering", "2h ago"],
+    ["Marcus Johnson|marcus@co.com", "Active", "Member", "Design", "5h ago"]
+  ]
+})
+```
+
+Key rules:
+- Use `|` to separate text and supporting text in a cell
+- Set `cellHeight` to enforce consistent row height (72 for
+  avatar rows, 56 for text-only). Without it, cells HUG and
+  rows misalign across columns.
+- **Infer cellVariants from HTML context.** When the HTML uses
+  different CSS classes or colors for the same column (e.g.
+  `status-active`, `status-pending`, `status-inactive`), map
+  those to DS variant overrides via `cellVariants`. Badge
+  columns almost always need color differentiation — don't
+  leave them all the same color.
+- The tool auto-resolves Table header cell and Table cell
+  component keys from the DS cache. Pass `headerCellKey` /
+  `dataCellKey` only if auto-resolution fails.
+- If the DS lacks table cell components, the tool returns
+  guidance on creating them — it does NOT fall back silently.
+- Column `style` maps to the Table cell's Style variant
+  (Text, Lead text, Lead avatar, Badge, etc.).
 
 ## Font-Incompatible Libraries
 

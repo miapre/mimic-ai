@@ -12,6 +12,7 @@ function createEmptyStore() {
     components: {},
     patterns: {},
     gaps: {},
+    libraryFileKeys: {},
     meta: {
       buildCount: 0,
       lastBuild: null,
@@ -38,6 +39,8 @@ class KnowledgeStore {
         throw new Error(`Unsupported schema version: ${parsed.version}`);
       }
       this.data = parsed;
+      // Backfill new fields for existing stores
+      if (!this.data.libraryFileKeys) this.data.libraryFileKeys = {};
     } catch (err) {
       if (err.code === 'ENOENT') {
         this.data = createEmptyStore();
@@ -109,6 +112,18 @@ class KnowledgeStore {
 
   getGaps() {
     return { ...this.data.gaps };
+  }
+
+  // ── Library File Keys ──────────────────────────────────────
+
+  setLibraryFileKey(libraryName, fileKey) {
+    if (!this.data.libraryFileKeys) this.data.libraryFileKeys = {};
+    this.data.libraryFileKeys[libraryName] = fileKey;
+    return this;
+  }
+
+  getLibraryFileKey(libraryName) {
+    return this.data.libraryFileKeys?.[libraryName] || null;
   }
 
   // ── Meta ────────────────────────────────────────────────────

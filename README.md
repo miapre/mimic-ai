@@ -350,7 +350,7 @@ Intelligence flows down. Binding feedback flows up. The MCP layer validates vari
 
 **Desktop app required.** Browser Figma won't work. [Download](https://www.figma.com/downloads/)
 
-**Personal Access Token.** Figma > Profile > Settings > Personal access tokens > Generate. Read access. Copy immediately.
+**Personal Access Token.** Figma > Profile > Settings > Security > Personal access tokens > Generate new token. Name: "Mimic AI", expiration: 90 days. Check five scopes: `current_user:read`, `file_content:read`, `file_metadata:read`, `library_assets:read`, `library_content:read`. All read-only — Mimic never writes to your library. Copy the token immediately.
 
 **Publish your DS.** Components and tokens in a separate file, published as a team library. Re-publish after changes.
 

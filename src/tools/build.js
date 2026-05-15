@@ -19,7 +19,28 @@ function getComponentFirstMatch(name) {
   return COMPONENT_FIRST_PATTERNS.find(p => lower.includes(p));
 }
 
-function checkComponentFirstGate(args, dsCache) {
+// Shell components — structural chrome that defines the app layout.
+// These are NON-NEGOTIABLE: if the DS has them, use them. No primitive
+// override allowed. The HTML layout for these is irrelevant — the DS
+// component IS the canonical layout.
+const SHELL_ELEMENTS = [
+  'sidebar', 'sidenav',
+];
+
+// Section-level elements that MUST be searched via mimic_map_components
+// before confirmedNoComponent is accepted. Generic layout names (like
+// "header row" used as a simple alignment wrapper) are not section-level.
+const SECTION_LEVEL_ELEMENTS = [
+  ...SHELL_ELEMENTS,
+  'footer', 'navigation', 'navbar',
+  'top bar', 'bottom bar', 'nav bar', 'app bar', 'breadcrumb',
+];
+
+function isSectionLevel(match) {
+  return SECTION_LEVEL_ELEMENTS.includes(match);
+}
+
+function checkComponentFirstGate(args, dsCache, session) {
   const match = getComponentFirstMatch(args?.name);
   if (!match) return null;
 
@@ -39,6 +60,56 @@ function checkComponentFirstGate(args, dsCache) {
     : '';
 
   if (confirmed && reason.length >= 12) {
+    // Shell elements (sidebar, header, footer) are HARD-BLOCKED.
+    // If the DS has them, use them. If not, mimic_map_components will
+    // have returned a recommendation to create them. Either way,
+    // building a primitive shell is never the right answer.
+    const isShell = SHELL_ELEMENTS.includes(match);
+    if (isShell) {
+      const mapped = session?.componentMap?.requested || [];
+      const wasSearched = mapped.some(t =>
+        t.toLowerCase().includes(match) || match.includes(t.toLowerCase())
+      );
+      if (!wasSearched) {
+        return {
+          allowed: false,
+          match,
+          error: 'SHELL_COMPONENT_REQUIRED',
+          message: `"${args?.name}" is a shell component ("${match}"). Shell components (sidebar, header, footer) must ALWAYS use DS components — the HTML layout is irrelevant. Call mimic_map_components with "${match}" first.`,
+          recovery: {
+            action: `Call mimic_map_components with elementTypes including "${match}". If the DS has a ${match} component, use it. If not, the tool will recommend creating one.`,
+          },
+        };
+      }
+      // Was searched and confirmed missing — allow with strong warning
+      return {
+        allowed: true,
+        match,
+        warning: `Shell component "${match}" not found in DS after search. Building as primitive. RECOMMENDATION: Create a ${match} component in your DS library for consistent app chrome across all screens.`,
+        _shellMissing: true,
+      };
+    }
+
+    // For other section-level elements, verify they were actually searched
+    // via mimic_map_components before accepting the primitive override.
+    if (isSectionLevel(match)) {
+      const mapped = session?.componentMap?.requested || [];
+      const wasSearched = mapped.some(t =>
+        t.toLowerCase().includes(match) || match.includes(t.toLowerCase())
+      );
+      if (!wasSearched) {
+        return {
+          allowed: false,
+          match,
+          error: 'MAPPING_REQUIRED_FIRST',
+          message: `"${args?.name}" is a section-level element ("${match}") that was never included in mimic_map_components. You must search for it before claiming no component exists.`,
+          recovery: {
+            action: `Call mimic_map_components with elementTypes including "${match}". If the search confirms no component exists, then retry with confirmedNoComponent: true.`,
+          },
+        };
+      }
+    }
+
     return {
       allowed: true,
       match,
@@ -150,7 +221,7 @@ function register(server, context) {
     },
     async (args) => {
       requirePhase(2, PHASE_HINT);
-      const componentGate = checkComponentFirstGate(args, dsCache);
+      const componentGate = checkComponentFirstGate(args, dsCache, session);
       if (componentGate && !componentGate.allowed) {
         return componentGate;
       }

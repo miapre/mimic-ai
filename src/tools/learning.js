@@ -280,6 +280,28 @@ function register(server, context) {
       // Advance phase to 5 (report)
       advancePhase(5);
 
+      // ── Persist learning data ──────────────────────────────────
+      // Auto-save component usage as recipes (name + instances + keys if available)
+      for (const comp of components) {
+        const existing = knowledgeStore.getComponent(comp.name);
+        const recipe = existing
+          ? { ...existing, instances: (existing.instances || 0) + (comp.instances || 0), buildCount: (existing.buildCount || 0) + 1 }
+          : { instances: comp.instances || 0, buildCount: 1, componentKey: comp.componentKey || null, variantConfig: comp.variantConfig || null };
+        knowledgeStore.setComponent(comp.name, recipe);
+      }
+
+      // Auto-save primitives as DS gaps with evidence
+      for (const prim of primitives) {
+        if (prim.reason && prim.reason.length >= 10) {
+          knowledgeStore.addGap(prim.element, {
+            elements: [prim.element],
+            evidence: `${prim.reason}. Screen: ${screenName}`,
+            estimatedSavings: `~7 tool calls per instance if DS component existed`,
+            searchTerms: prim.searchTerms || [],
+          });
+        }
+      }
+
       // Increment build count
       knowledgeStore.incrementBuildCount();
       knowledgeStore.save();
