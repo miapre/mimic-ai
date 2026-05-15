@@ -93,6 +93,10 @@ function register(server, context) {
           type: 'string',
           description: 'Library file key (alphanumeric string from the Figma URL of the library file). Prompted once per library, cached permanently.',
         },
+        skipRestApi: {
+          type: 'boolean',
+          description: 'Skip REST API component discovery (e.g. for community libraries where the file key is unavailable). Discovery proceeds with plugin-only data; use Figma MCP search_design_system + mimic_map_components to find components.',
+        },
         externalVariables: {
           type: 'array',
           items: {
@@ -607,7 +611,8 @@ function register(server, context) {
       }
 
       // If no library file key and we have a selected library, prompt the user
-      if (selectedLib && !libraryFileKey) {
+      // (unless skipRestApi is set — e.g. community libraries with no accessible file key)
+      if (selectedLib && !libraryFileKey && !args.skipRestApi) {
         return {
           phase: session.phase,
           phaseLabel: PHASE_LABELS[session.phase] || 'discovery',
@@ -620,8 +625,9 @@ function register(server, context) {
             `To discover all published components and text styles, Mimic needs the library's file key.\n\n` +
             `Open "${selectedLib}" in Figma. The URL looks like:\n` +
             `figma.com/design/ [copy this part] /${selectedLib.replace(/\s+/g, '-')}\n\n` +
-            `Paste the file key:`,
-          hint: `STOP \u2014 present _userPrompt to the user. They need to provide the library file key. Then re-call mimic_discover_ds with fileKey and libraryFileKey set to the pasted value.`,
+            `Paste the file key:\n\n` +
+            `(If this is a community library and you don't have the file key, re-call with skipRestApi: true to proceed without REST API discovery.)`,
+          hint: `STOP \u2014 present _userPrompt to the user. They need to provide the library file key. Then re-call mimic_discover_ds with fileKey and libraryFileKey set to the pasted value. If the library is a community file and the user can't provide the key, re-call with skipRestApi: true.`,
         };
       }
 

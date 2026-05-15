@@ -85,10 +85,10 @@ class DsDiscovery {
   searchComponent(elementType) {
     const base = String(elementType || '').toLowerCase().trim();
 
-    // Check knowledge store first
+    // Check knowledge store first (skip entries with null componentKey — fall through to DS cache)
     const knownComponents = this.knowledgeStore.data.components;
     for (const [id, recipe] of Object.entries(knownComponents)) {
-      if (id.toLowerCase().includes(base)) {
+      if (id.toLowerCase().includes(base) && recipe.componentKey) {
         return {
           found: true,
           componentKey: recipe.componentKey,
