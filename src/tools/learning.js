@@ -91,9 +91,10 @@ function register(server, context) {
             properties: {
               name: { type: 'string' },
               instances: { type: 'number' },
+              componentKey: { type: 'string', description: 'Component key used for insertion. If provided, persisted directly to knowledge store.' },
             },
           },
-          description: 'DS components used in the build.',
+          description: 'DS components used in the build. Include componentKey from figma_insert_component responses for reliable learning.',
         },
         primitives: {
           type: 'array',
@@ -287,8 +288,10 @@ function register(server, context) {
         let resolvedKey = comp.componentKey || null;
         // Strategy 1: Check session insertion tracking (most reliable — actual keys used during build)
         if (!resolvedKey && session._componentInsertions) {
-          for (const [instanceName, key] of Object.entries(session._componentInsertions)) {
-            if (instanceName.toLowerCase().includes(compName) || compName.includes(instanceName.toLowerCase())) {
+          for (const [key, info] of session._componentInsertions) {
+            // Match if any instance name contains the component name or vice versa
+            const names = (info.names || []).map(n => n.toLowerCase());
+            if (names.some(n => n.includes(compName) || compName.includes(n))) {
               resolvedKey = key;
               break;
             }

@@ -113,11 +113,14 @@ function register(server, context) {
         });
       }
 
-      // Track insertion for learning persistence (maps instance name → componentKey)
-      if (!session._componentInsertions) session._componentInsertions = {};
-      const insertionName = args.name || result?.name || result?.componentName;
-      if (insertionName && args.componentKey) {
-        session._componentInsertions[insertionName] = args.componentKey;
+      // Track insertion for learning persistence (maps componentKey → all names used)
+      if (!session._componentInsertions) session._componentInsertions = new Map();
+      if (args.componentKey) {
+        const existing = session._componentInsertions.get(args.componentKey) || { count: 0, names: [] };
+        existing.count++;
+        const instanceName = args.name || result?.name;
+        if (instanceName && !existing.names.includes(instanceName)) existing.names.push(instanceName);
+        session._componentInsertions.set(args.componentKey, existing);
       }
 
       // Check knowledge store for recipes
