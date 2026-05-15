@@ -57,6 +57,8 @@ function resolveChartTheme(dsCache, overrides = {}) {
   };
 }
 
+const { BatchCollector } = require('../utils/batch-collector');
+
 function register(server, context) {
   const { bridge, dsCache, session, requirePhase, advancePhase, registerTool } = context;
   const calc = new ChartCalculator();
@@ -193,10 +195,13 @@ function register(server, context) {
         return { error: 'GEOMETRY_FAILED', message: `Chart geometry calculation failed: ${err.message}` };
       }
 
-      // ── 2. Create chart card container ──
+      // ── 2. Batch execution via collector ──
+      // Linear ops go through the collector; SVG ops flush first then use bridge directly.
+      const collector = new BatchCollector();
+
       let cardId;
       try {
-        const cardResult = await bridge.send('create_frame', {
+        const cardResult = await collector.send('create_frame', {
           parentId,
           name: `Chart: ${title}`,
           direction: 'VERTICAL',
@@ -214,7 +219,7 @@ function register(server, context) {
 
       // ── 3. Create title text ──
       try {
-        await bridge.send('create_text', {
+        await collector.send('create_text', {
           parentId: cardId,
           name: 'Chart Title',
           content: title,
@@ -229,19 +234,26 @@ function register(server, context) {
       }
 
       // ── Dispatch to chart-type-specific builder ──
+      // Builders receive both collector (for linear ops) and bridge (for SVG ops).
+      // Builders call collector.flush(bridge) before any SVG/read-then-write operation.
       switch (chartType) {
         case 'bar':
-          await buildBarChart(bridge, cardId, geometry, palette, dimensions, results, op, fail, theme);
+          await buildBarChart(collector, bridge, cardId, geometry, palette, dimensions, results, op, fail, theme);
           break;
         case 'donut':
-          await buildDonutChart(bridge, cardId, geometry, palette, seriesNames, results, op, fail, theme);
+          await buildDonutChart(collector, bridge, cardId, geometry, palette, seriesNames, results, op, fail, theme);
           break;
         case 'line':
-          await buildLineChart(bridge, cardId, geometry, palette, seriesNames, dimensions, results, op, fail, theme);
+          await buildLineChart(collector, bridge, cardId, geometry, palette, seriesNames, dimensions, results, op, fail, theme);
           break;
         case 'radar':
-          await buildRadarChart(bridge, cardId, geometry, palette, seriesNames, dimensions, results, op, fail, theme);
+          await buildRadarChart(collector, bridge, cardId, geometry, palette, seriesNames, dimensions, results, op, fail, theme);
           break;
+      }
+
+      // Flush any remaining collected ops
+      if (collector.ops.length > 0) {
+        await collector.flush(bridge);
       }
 
       session.toolCallCount += results.totalOperations;
@@ -277,14 +289,14 @@ function register(server, context) {
 // BAR CHART
 // Native rectangles in a horizontal frame, aligned bottom.
 // ═══════════════════════════════════════════════════════════════
-async function buildBarChart(bridge, cardId, geometry, palette, dimensions, results, op, fail, theme) {
+async function buildBarChart(collector, bridge, cardId, geometry, palette, dimensions, results, op, fail, theme) {
   const { bars, yAxis, xAxis, chartWidth } = geometry;
   const chartHeight = dimensions.chartHeight || 200;
 
   // Chart area container (holds y-axis + plot area side by side)
   let chartAreaId;
   try {
-    const r = await bridge.send('create_frame', {
+    const r = await collector.send('create_frame', {
       parentId: cardId,
       name: 'Chart Area',
       direction: 'HORIZONTAL',
@@ -304,7 +316,7 @@ async function buildBarChart(bridge, cardId, geometry, palette, dimensions, resu
   // ── Y-axis labels ──
   let yAxisId;
   try {
-    const r = await bridge.send('create_frame', {
+    const r = await collector.send('create_frame', {
       parentId: chartAreaId,
       name: 'Y Axis',
       direction: 'NONE',
@@ -323,7 +335,7 @@ async function buildBarChart(bridge, cardId, geometry, palette, dimensions, resu
   if (yAxisId) {
     for (const tick of yAxis.ticks) {
       try {
-        await bridge.send('create_text', {
+        await collector.send('create_text', {
           parentId: yAxisId,
           name: `Y: ${tick.label}`,
           content: tick.label,
@@ -343,7 +355,7 @@ async function buildBarChart(bridge, cardId, geometry, palette, dimensions, resu
   // ── Plot area (bars + grid) ──
   let plotId;
   try {
-    const r = await bridge.send('create_frame', {
+    const r = await collector.send('create_frame', {
       parentId: chartAreaId,
       name: 'Plot Area',
       direction: 'NONE',
@@ -362,7 +374,7 @@ async function buildBarChart(bridge, cardId, geometry, palette, dimensions, resu
   // Grid lines (horizontal)
   for (const tick of yAxis.ticks) {
     try {
-      await bridge.send('create_rectangle', {
+      await collector.send('create_rectangle', {
         parentId: plotId,
         name: `Grid ${tick.label}`,
         width: 9999, // will be constrained by parent
@@ -381,7 +393,7 @@ async function buildBarChart(bridge, cardId, geometry, palette, dimensions, resu
   // Bars frame (horizontal, bottom-aligned for bar alignment)
   let barsFrameId;
   try {
-    const r = await bridge.send('create_frame', {
+    const r = await collector.send('create_frame', {
       parentId: plotId,
       name: 'Bars',
       direction: 'HORIZONTAL',
@@ -406,7 +418,7 @@ async function buildBarChart(bridge, cardId, geometry, palette, dimensions, resu
     const bar = bars[i];
     const color = palette[i % palette.length];
     try {
-      await bridge.send('create_rectangle', {
+      await collector.send('create_rectangle', {
         parentId: barsFrameId,
         name: `Bar: ${bar.label}`,
         height: Math.max(2, bar.height),
@@ -424,7 +436,7 @@ async function buildBarChart(bridge, cardId, geometry, palette, dimensions, resu
   // ── X-axis labels ──
   let xAxisId;
   try {
-    const r = await bridge.send('create_frame', {
+    const r = await collector.send('create_frame', {
       parentId: cardId,
       name: 'X Axis',
       direction: 'HORIZONTAL',
@@ -442,7 +454,7 @@ async function buildBarChart(bridge, cardId, geometry, palette, dimensions, resu
   if (xAxisId) {
     // Spacer to align with y-axis width
     try {
-      await bridge.send('create_rectangle', {
+      await collector.send('create_rectangle', {
         parentId: xAxisId,
         name: 'X Axis Spacer',
         width: 40,
@@ -458,7 +470,7 @@ async function buildBarChart(bridge, cardId, geometry, palette, dimensions, resu
     // Label frame with SPACE_BETWEEN
     let xLabelsId;
     try {
-      const r = await bridge.send('create_frame', {
+      const r = await collector.send('create_frame', {
         parentId: xAxisId,
         name: 'X Labels',
         direction: 'HORIZONTAL',
@@ -476,7 +488,7 @@ async function buildBarChart(bridge, cardId, geometry, palette, dimensions, resu
     if (xLabelsId) {
       for (const label of xAxis.labels) {
         try {
-          await bridge.send('create_text', {
+          await collector.send('create_text', {
             parentId: xLabelsId,
             name: `X: ${label.label}`,
             content: label.label,
@@ -498,13 +510,13 @@ async function buildBarChart(bridge, cardId, geometry, palette, dimensions, resu
 // DONUT CHART
 // SVG with filled arc segments + native legend with colored rects.
 // ═══════════════════════════════════════════════════════════════
-async function buildDonutChart(bridge, cardId, geometry, palette, seriesNames, results, op, fail, theme) {
+async function buildDonutChart(collector, bridge, cardId, geometry, palette, seriesNames, results, op, fail, theme) {
   const { segments, diameter, legend } = geometry;
 
   // Chart + legend container
   let donutAreaId;
   try {
-    const r = await bridge.send('create_frame', {
+    const r = await collector.send('create_frame', {
       parentId: cardId,
       name: 'Donut Area',
       direction: 'VERTICAL',
@@ -530,10 +542,14 @@ async function buildDonutChart(bridge, cardId, geometry, palette, seriesNames, r
 
   const svgString = `<svg viewBox="0 0 ${diameter} ${diameter}" xmlns="http://www.w3.org/2000/svg">${svgParts.join('')}</svg>`;
 
+  // Flush collector before SVG (need real nodeIds for parentId + unboundChildren)
+  await collector.flush(bridge);
+  const realDonutAreaId = collector.getRealNodeId(donutAreaId);
+
   let svgResult;
   try {
     svgResult = await bridge.send('create_svg', {
-      parentId: donutAreaId,
+      parentId: realDonutAreaId,
       name: 'Donut Chart',
       svgString,
     });
@@ -564,8 +580,8 @@ async function buildDonutChart(bridge, cardId, geometry, palette, seriesNames, r
   // ── Legend ──
   let legendFrameId;
   try {
-    const r = await bridge.send('create_frame', {
-      parentId: donutAreaId,
+    const r = await collector.send('create_frame', {
+      parentId: realDonutAreaId,
       name: 'Legend',
       direction: 'HORIZONTAL',
       layoutSizingHorizontal: 'HUG',
@@ -588,7 +604,7 @@ async function buildDonutChart(bridge, cardId, geometry, palette, seriesNames, r
       // Legend item frame
       let itemId;
       try {
-        const r = await bridge.send('create_frame', {
+        const r = await collector.send('create_frame', {
           parentId: legendFrameId,
           name: `Legend: ${entry.label}`,
           direction: 'HORIZONTAL',
@@ -607,7 +623,7 @@ async function buildDonutChart(bridge, cardId, geometry, palette, seriesNames, r
 
       // Color dot (rectangle with radius-full)
       try {
-        await bridge.send('create_rectangle', {
+        await collector.send('create_rectangle', {
           parentId: itemId,
           name: `Dot: ${entry.label}`,
           width: 8,
@@ -623,7 +639,7 @@ async function buildDonutChart(bridge, cardId, geometry, palette, seriesNames, r
 
       // Label text
       try {
-        await bridge.send('create_text', {
+        await collector.send('create_text', {
           parentId: itemId,
           name: `Label: ${entry.label}`,
           content: entry.displayText,
@@ -644,7 +660,7 @@ async function buildDonutChart(bridge, cardId, geometry, palette, seriesNames, r
 // Area fill SVG (closed path, fill only, NO stroke) +
 // thin ribbon SVG for data line + native text for axes.
 // ═══════════════════════════════════════════════════════════════
-async function buildLineChart(bridge, cardId, geometry, palette, seriesNames, dimensions, results, op, fail, theme) {
+async function buildLineChart(collector, bridge, cardId, geometry, palette, seriesNames, dimensions, results, op, fail, theme) {
   const { points, yAxis, xAxis } = geometry;
   const plotWidth = dimensions.plotWidth || 400;
   const plotHeight = dimensions.plotHeight || 200;
@@ -652,7 +668,7 @@ async function buildLineChart(bridge, cardId, geometry, palette, seriesNames, di
   // Chart area (y-axis + plot side by side)
   let chartAreaId;
   try {
-    const r = await bridge.send('create_frame', {
+    const r = await collector.send('create_frame', {
       parentId: cardId,
       name: 'Chart Area',
       direction: 'HORIZONTAL',
@@ -671,7 +687,7 @@ async function buildLineChart(bridge, cardId, geometry, palette, seriesNames, di
   // ── Y-axis labels ──
   let yAxisId;
   try {
-    const r = await bridge.send('create_frame', {
+    const r = await collector.send('create_frame', {
       parentId: chartAreaId,
       name: 'Y Axis',
       direction: 'NONE',
@@ -690,7 +706,7 @@ async function buildLineChart(bridge, cardId, geometry, palette, seriesNames, di
   if (yAxisId) {
     for (const tick of yAxis.ticks) {
       try {
-        await bridge.send('create_text', {
+        await collector.send('create_text', {
           parentId: yAxisId,
           name: `Y: ${tick.label}`,
           content: tick.label,
@@ -710,7 +726,7 @@ async function buildLineChart(bridge, cardId, geometry, palette, seriesNames, di
   // ── Plot area (NONE direction, fixed size) ──
   let plotId;
   try {
-    const r = await bridge.send('create_frame', {
+    const r = await collector.send('create_frame', {
       parentId: chartAreaId,
       name: 'Plot Area',
       direction: 'NONE',
@@ -729,7 +745,7 @@ async function buildLineChart(bridge, cardId, geometry, palette, seriesNames, di
   // Grid lines (horizontal rectangles)
   for (const tick of yAxis.ticks) {
     try {
-      await bridge.send('create_rectangle', {
+      await collector.send('create_rectangle', {
         parentId: plotId,
         name: `Grid ${tick.label}`,
         width: 9999,
@@ -744,6 +760,11 @@ async function buildLineChart(bridge, cardId, geometry, palette, seriesNames, di
       fail('grid-line', err);
     }
   }
+
+  // Flush collector before SVG operations (need real nodeIds)
+  await collector.flush(bridge);
+  const realPlotId = collector.getRealNodeId(plotId);
+  const realCardIdLine = collector.getRealNodeId(cardId);
 
   // Area fill SVG (closed polygon, fill only, NO stroke)
   if (points.length >= 2) {
@@ -761,7 +782,7 @@ async function buildLineChart(bridge, cardId, geometry, palette, seriesNames, di
     let areaResult;
     try {
       areaResult = await bridge.send('create_svg', {
-        parentId: plotId,
+        parentId: realPlotId,
         name: 'Area Fill',
         svgString: areaSvg,
         layoutSizingHorizontal: 'FILL',
@@ -802,7 +823,7 @@ async function buildLineChart(bridge, cardId, geometry, palette, seriesNames, di
     let ribbonResult;
     try {
       ribbonResult = await bridge.send('create_svg', {
-        parentId: plotId,
+        parentId: realPlotId,
         name: 'Data Line',
         svgString: ribbonSvg,
         layoutSizingHorizontal: 'FILL',
@@ -837,7 +858,7 @@ async function buildLineChart(bridge, cardId, geometry, palette, seriesNames, di
       const pointColor = palette[0];
       try {
         await bridge.send('create_ellipse', {
-          parentId: plotId,
+          parentId: realPlotId,
           name: `Point: ${pt.label}`,
           width: 6,
           height: 6,
@@ -856,8 +877,8 @@ async function buildLineChart(bridge, cardId, geometry, palette, seriesNames, di
   // ── X-axis labels ──
   let xAxisId;
   try {
-    const r = await bridge.send('create_frame', {
-      parentId: cardId,
+    const r = await collector.send('create_frame', {
+      parentId: realCardIdLine,
       name: 'X Axis',
       direction: 'HORIZONTAL',
       layoutSizingHorizontal: 'FILL',
@@ -873,7 +894,7 @@ async function buildLineChart(bridge, cardId, geometry, palette, seriesNames, di
   if (xAxisId) {
     // Spacer for y-axis alignment
     try {
-      await bridge.send('create_rectangle', {
+      await collector.send('create_rectangle', {
         parentId: xAxisId,
         name: 'X Axis Spacer',
         width: 40,
@@ -888,7 +909,7 @@ async function buildLineChart(bridge, cardId, geometry, palette, seriesNames, di
 
     let xLabelsId;
     try {
-      const r = await bridge.send('create_frame', {
+      const r = await collector.send('create_frame', {
         parentId: xAxisId,
         name: 'X Labels',
         direction: 'HORIZONTAL',
@@ -906,7 +927,7 @@ async function buildLineChart(bridge, cardId, geometry, palette, seriesNames, di
     if (xLabelsId) {
       for (const label of xAxis.labels) {
         try {
-          await bridge.send('create_text', {
+          await collector.send('create_text', {
             parentId: xLabelsId,
             name: `X: ${label.label}`,
             content: label.label,
@@ -925,7 +946,7 @@ async function buildLineChart(bridge, cardId, geometry, palette, seriesNames, di
 
   // ── Legend (only for multi-series) ──
   if (seriesNames && seriesNames.length > 1) {
-    await buildLegend(bridge, cardId, seriesNames, palette, results, op, fail, theme);
+    await buildLegend(collector, bridge, realCardIdLine, seriesNames, palette, results, op, fail, theme);
   }
 }
 
@@ -933,7 +954,7 @@ async function buildLineChart(bridge, cardId, geometry, palette, seriesNames, di
 // RADAR CHART
 // SVG with filled polygons only (NO stroke). Native text labels.
 // ═══════════════════════════════════════════════════════════════
-async function buildRadarChart(bridge, cardId, geometry, palette, seriesNames, dimensions, results, op, fail, theme) {
+async function buildRadarChart(collector, bridge, cardId, geometry, palette, seriesNames, dimensions, results, op, fail, theme) {
   const { series, gridSvg, labelPositions } = geometry;
   const radius = dimensions.radius || 100;
   const viewSize = radius * 2.5; // extra space for labels
@@ -943,7 +964,7 @@ async function buildRadarChart(bridge, cardId, geometry, palette, seriesNames, d
   // Radar container
   let radarAreaId;
   try {
-    const r = await bridge.send('create_frame', {
+    const r = await collector.send('create_frame', {
       parentId: cardId,
       name: 'Radar Area',
       direction: 'VERTICAL',
@@ -992,10 +1013,14 @@ async function buildRadarChart(bridge, cardId, geometry, palette, seriesNames, d
 
   const svgString = `<svg viewBox="0 0 ${viewSize} ${viewSize}" xmlns="http://www.w3.org/2000/svg">${svgParts.join('')}</svg>`;
 
+  // Flush collector before SVG (need real nodeIds)
+  await collector.flush(bridge);
+  const realRadarAreaId = collector.getRealNodeId(radarAreaId);
+
   let svgResult;
   try {
     svgResult = await bridge.send('create_svg', {
-      parentId: radarAreaId,
+      parentId: realRadarAreaId,
       name: 'Radar Chart',
       svgString,
     });
@@ -1030,8 +1055,8 @@ async function buildRadarChart(bridge, cardId, geometry, palette, seriesNames, d
   // Place labels in a NONE-direction frame overlapping the SVG
   let labelsFrameId;
   try {
-    const r = await bridge.send('create_frame', {
-      parentId: radarAreaId,
+    const r = await collector.send('create_frame', {
+      parentId: realRadarAreaId,
       name: 'Radar Labels',
       direction: 'NONE',
       width: viewSize,
@@ -1049,7 +1074,7 @@ async function buildRadarChart(bridge, cardId, geometry, palette, seriesNames, d
   if (labelsFrameId) {
     for (const lp of labelPositions) {
       try {
-        await bridge.send('create_text', {
+        await collector.send('create_text', {
           parentId: labelsFrameId,
           name: `Label: ${lp.label}`,
           content: lp.label,
@@ -1069,7 +1094,8 @@ async function buildRadarChart(bridge, cardId, geometry, palette, seriesNames, d
 
   // ── Legend (for multi-series) ──
   if (seriesNames && seriesNames.length > 0) {
-    await buildLegend(bridge, cardId, seriesNames, palette, results, op, fail, theme);
+    const realCardIdRadar = collector.getRealNodeId(cardId);
+    await buildLegend(collector, bridge, realCardIdRadar, seriesNames, palette, results, op, fail, theme);
   }
 }
 
@@ -1077,10 +1103,10 @@ async function buildRadarChart(bridge, cardId, geometry, palette, seriesNames, d
 // SHARED: Legend builder
 // Horizontal row of colored rectangles + label text.
 // ═══════════════════════════════════════════════════════════════
-async function buildLegend(bridge, parentId, labels, palette, results, op, fail, theme) {
+async function buildLegend(collector, bridge, parentId, labels, palette, results, op, fail, theme) {
   let legendFrameId;
   try {
-    const r = await bridge.send('create_frame', {
+    const r = await collector.send('create_frame', {
       parentId,
       name: 'Legend',
       direction: 'HORIZONTAL',
@@ -1103,7 +1129,7 @@ async function buildLegend(bridge, parentId, labels, palette, results, op, fail,
 
     let itemId;
     try {
-      const r = await bridge.send('create_frame', {
+      const r = await collector.send('create_frame', {
         parentId: legendFrameId,
         name: `Legend: ${label}`,
         direction: 'HORIZONTAL',
@@ -1122,7 +1148,7 @@ async function buildLegend(bridge, parentId, labels, palette, results, op, fail,
 
     // Color indicator (rectangle, not text dot)
     try {
-      await bridge.send('create_rectangle', {
+      await collector.send('create_rectangle', {
         parentId: itemId,
         name: `Dot: ${label}`,
         width: 8,
@@ -1138,7 +1164,7 @@ async function buildLegend(bridge, parentId, labels, palette, results, op, fail,
 
     // Label text
     try {
-      await bridge.send('create_text', {
+      await collector.send('create_text', {
         parentId: itemId,
         name: `Label: ${label}`,
         content: label,
