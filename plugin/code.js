@@ -2252,6 +2252,96 @@ handlers.validate_library_access = async function (payload) {
   return { results: results };
 };
 
+handlers.batch_execute = async function (payload) {
+  var operations = payload.operations || [];
+  if (operations.length === 0) return { results: [], totalOps: 0, succeeded: 0, failed: 0 };
+  if (operations.length > 200) throw {
+    error: 'BATCH_TOO_LARGE',
+    message: 'Maximum 200 operations per batch. Got: ' + operations.length + '. The bridge auto-chunks larger batches.',
+    recovery: 'Use bridge.sendBatch() which handles chunking automatically.'
+  };
+
+  var results = [];
+  var REF_PATTERN = /^\$resultOf:(\d+)(?:\.(.+))?$/;
+
+  function resolvePayloadRefs(obj) {
+    if (!obj || typeof obj !== 'object') return obj;
+    if (Array.isArray(obj)) return obj.map(resolvePayloadRefs);
+    var out = {};
+    for (var key in obj) {
+      if (!obj.hasOwnProperty(key)) continue;
+      var val = obj[key];
+      if (typeof val === 'string') {
+        var m = val.match(REF_PATTERN);
+        if (m) {
+          var idx = parseInt(m[1], 10);
+          var field = m[2] || 'nodeId';
+          var entry = results[idx];
+          out[key] = (entry && entry.ok && entry.result) ? (entry.result[field] || null) : null;
+        } else {
+          out[key] = val;
+        }
+      } else if (typeof val === 'object' && val !== null) {
+        out[key] = resolvePayloadRefs(val);
+      } else {
+        out[key] = val;
+      }
+    }
+    return out;
+  }
+
+  for (var i = 0; i < operations.length; i++) {
+    var op = operations[i];
+    var opType = op.type;
+    var opPayload = op.payload || {};
+
+    var resolved = resolvePayloadRefs(opPayload);
+
+    // Normalize node IDs
+    var idKeys = ['nodeId', 'parentId', 'targetId', 'instanceId', 'frameId'];
+    for (var k = 0; k < idKeys.length; k++) {
+      if (typeof resolved[idKeys[k]] === 'string') {
+        resolved[idKeys[k]] = resolved[idKeys[k]].replace(/-/g, ':');
+      }
+    }
+
+    // Skip if a required parent/node reference resolved to null
+    if (resolved.parentId === null || resolved.nodeId === null) {
+      results.push({
+        ok: false, index: i, type: opType,
+        error: 'SKIPPED_DEPENDENCY_FAILED',
+        message: 'A $resultOf reference resolved to null (prior operation failed or out of bounds).',
+      });
+      continue;
+    }
+
+    var handler = handlers[opType];
+    if (!handler) {
+      results.push({ ok: false, index: i, type: opType, error: 'UNKNOWN_HANDLER', message: 'No handler: ' + opType });
+      continue;
+    }
+
+    try {
+      var result = handler(resolved);
+      if (result && typeof result.then === 'function') {
+        result = await result;
+      }
+      results.push({ ok: true, index: i, type: opType, result: result });
+    } catch (err) {
+      var errMsg = (err instanceof Error) ? err.message : (err.message || JSON.stringify(err));
+      results.push({ ok: false, index: i, type: opType, error: errMsg });
+    }
+  }
+
+  var succeeded = results.filter(function (r) { return r.ok; }).length;
+  return {
+    results: results,
+    totalOps: results.length,
+    succeeded: succeeded,
+    failed: results.length - succeeded,
+  };
+};
+
 handlers.clear_style_cache = function () {
   styleCache.clear();
   return { cleared: true, message: 'Style cache cleared.' };
