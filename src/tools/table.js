@@ -10,6 +10,8 @@
  * Reduces a 10×5 table from ~210 tool calls to 1.
  */
 
+const { BatchCollector } = require('../utils/batch-collector');
+
 function register(server, context) {
   const { bridge, dsCache, session, requirePhase, advancePhase, registerTool, knowledgeStore } = context;
 
@@ -157,10 +159,13 @@ function register(server, context) {
         failures: [],
       };
 
+      // Batch collector — linear ops go through this, flushed before cellVariants
+      const collector = new BatchCollector();
+
       // Create the table body frame (horizontal, contains columns)
       let tableBodyId;
       try {
-        const bodyResult = await bridge.send('create_frame', {
+        const bodyResult = await collector.send('create_frame', {
           parentId,
           name: 'Table Body',
           direction: 'HORIZONTAL',
@@ -173,6 +178,9 @@ function register(server, context) {
         return { error: 'TABLE_BODY_FAILED', message: err.message };
       }
 
+      // Deferred cellVariant operations (need real nodeIds — processed after flush)
+      const pendingCellVariants = [];
+
       // Build each column
       for (let colIdx = 0; colIdx < columns.length; colIdx++) {
         const col = columns[colIdx];
@@ -181,7 +189,7 @@ function register(server, context) {
         // Create column frame
         let colId;
         try {
-          const colResult = await bridge.send('create_frame', {
+          const colResult = await collector.send('create_frame', {
             parentId: tableBodyId,
             name: colName,
             direction: 'VERTICAL',
@@ -197,7 +205,7 @@ function register(server, context) {
 
         // Insert header cell
         try {
-          const headerResult = await bridge.send('insert_component', {
+          const headerResult = await collector.send('insert_component', {
             componentKey: headerCellKey,
             parentId: colId,
             name: `TH: ${col.header}`,
@@ -210,7 +218,7 @@ function register(server, context) {
             const headerOps = [];
 
             // Set header text
-            headerOps.push(bridge.send('set_component_text', {
+            headerOps.push(collector.send('set_component_text', {
               nodeId: headerResult.nodeId,
               textNodeName: 'Text',
               content: col.header,
@@ -218,13 +226,13 @@ function register(server, context) {
 
             // Set header variants (checkbox off by default)
             const hVariant = { Checkbox: 'False', ...(headerVariant || {}) };
-            headerOps.push(bridge.send('set_variant', {
+            headerOps.push(collector.send('set_variant', {
               nodeId: headerResult.nodeId,
               properties: hVariant,
             }));
 
             // FILL width
-            headerOps.push(bridge.send('set_layout_sizing', {
+            headerOps.push(collector.send('set_layout_sizing', {
               nodeId: headerResult.nodeId,
               layoutSizingHorizontal: 'FILL',
             }));
@@ -246,7 +254,7 @@ function register(server, context) {
           const hasSupportingText = col.supportingText && supportingText;
 
           try {
-            const cellResult = await bridge.send('insert_component', {
+            const cellResult = await collector.send('insert_component', {
               componentKey: dataCellKey,
               parentId: colId,
               name: `TD: ${text}`,
@@ -259,7 +267,7 @@ function register(server, context) {
 
               // Set variant: Supporting text first (must be set before Style
               // to avoid invalid variant combinations)
-              cellOps.push(bridge.send('set_variant', {
+              cellOps.push(collector.send('set_variant', {
                 nodeId: cellResult.nodeId,
                 properties: { 'Supporting text': hasSupportingText ? 'True' : 'False' },
               }));
@@ -270,7 +278,7 @@ function register(server, context) {
               // Now set Style (after Supporting text is resolved)
               const styleOps = [];
               try {
-                await bridge.send('set_variant', {
+                await collector.send('set_variant', {
                   nodeId: cellResult.nodeId,
                   properties: { Style: col.style },
                 });
@@ -287,7 +295,7 @@ function register(server, context) {
 
               // Set text content
               try {
-                await bridge.send('set_component_text', {
+                await collector.send('set_component_text', {
                   nodeId: cellResult.nodeId,
                   textNodeName: 'Text',
                   content: text,
@@ -306,7 +314,7 @@ function register(server, context) {
               // Set supporting text if applicable
               if (hasSupportingText) {
                 try {
-                  await bridge.send('set_component_text', {
+                  await collector.send('set_component_text', {
                     nodeId: cellResult.nodeId,
                     textNodeName: 'Supporting text',
                     content: supportingText,
@@ -315,40 +323,13 @@ function register(server, context) {
                 } catch { /* supporting text node may not exist in this style */ }
               }
 
-              // Apply per-cell variant overrides (e.g. badge colors).
-              // Cell variants target NESTED component instances inside the
-              // cell (e.g. Badge inside a Table cell with Style=Badge).
-              // Always traverse into children — the cell itself rarely has
-              // these properties; the nested component does.
+              // Defer cellVariants — need real nodeIds from get_node_children.
+              // Collected here, processed after collector flush (Phase 2).
               if (col.cellVariants && col.cellVariants[text]) {
-                const variantProps = col.cellVariants[text];
-                try {
-                  const children = await bridge.send('get_node_children', {
-                    nodeId: cellResult.nodeId, depth: 1,
-                  });
-                  results.totalOperations++;
-                  const nestedInstances = (children?.children || [])
-                    .filter(c => c.type === 'INSTANCE');
-                  for (const child of nestedInstances) {
-                    try {
-                      await bridge.send('set_variant', {
-                        nodeId: child.id,
-                        properties: variantProps,
-                      });
-                      results.totalOperations++;
-                      break; // applied to first matching instance
-                    } catch { /* try next */ }
-                  }
-                  // Fallback: try on cell itself (some DSs may expose
-                  // nested variants at the cell level)
-                  if (nestedInstances.length === 0) {
-                    await bridge.send('set_variant', {
-                      nodeId: cellResult.nodeId,
-                      properties: variantProps,
-                    });
-                    results.totalOperations++;
-                  }
-                } catch { /* non-fatal */ }
+                pendingCellVariants.push({
+                  cellRef: cellResult.nodeId, // $resultOf:N — resolved after flush
+                  variantProps: col.cellVariants[text],
+                });
               }
 
               // Set FILL width + fixed height for row alignment
@@ -361,7 +342,7 @@ function register(server, context) {
                 sizingPayload.height = cellHeight;
               }
               try {
-                await bridge.send('set_layout_sizing', sizingPayload);
+                await collector.send('set_layout_sizing', sizingPayload);
                 results.totalOperations++;
               } catch { /* non-fatal */ }
 
@@ -380,9 +361,49 @@ function register(server, context) {
         results.columns.push({
           header: col.header,
           style: col.style,
-          nodeId: colId,
+          nodeId: colId, // $resultOf:N — resolved to real ID after flush in the return
           cells: rows.length,
         });
+      }
+
+      // ── Flush: send all collected ops as one batch ──
+      await collector.flush(bridge);
+
+      // ── Phase 2: Process deferred cellVariants (need real nodeIds) ──
+      for (const cv of pendingCellVariants) {
+        const realCellId = collector.getRealNodeId(cv.cellRef);
+        if (!realCellId) continue;
+
+        try {
+          const children = await bridge.send('get_node_children', {
+            nodeId: realCellId, depth: 1,
+          });
+          results.totalOperations++;
+          const nestedInstances = (children?.children || [])
+            .filter(c => c.type === 'INSTANCE');
+
+          let applied = false;
+          for (const child of nestedInstances) {
+            try {
+              await bridge.send('set_variant', {
+                nodeId: child.id,
+                properties: cv.variantProps,
+              });
+              results.totalOperations++;
+              applied = true;
+              break;
+            } catch { /* try next */ }
+          }
+
+          // Fallback: try on cell itself
+          if (!applied) {
+            await bridge.send('set_variant', {
+              nodeId: realCellId,
+              properties: cv.variantProps,
+            });
+            results.totalOperations++;
+          }
+        } catch { /* non-fatal */ }
       }
 
       session.toolCallCount += results.totalOperations;
@@ -390,7 +411,7 @@ function register(server, context) {
 
       const totalCells = results.headerCells + results.dataCells;
       return {
-        tableBodyId,
+        tableBodyId: collector.getRealNodeId(tableBodyId) || tableBodyId,
         columns: results.columns,
         summary: {
           headerCells: results.headerCells,
