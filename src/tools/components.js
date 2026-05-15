@@ -113,6 +113,13 @@ function register(server, context) {
         });
       }
 
+      // Track insertion for learning persistence (maps instance name → componentKey)
+      if (!session._componentInsertions) session._componentInsertions = {};
+      const insertionName = args.name || result?.name || result?.componentName;
+      if (insertionName && args.componentKey) {
+        session._componentInsertions[insertionName] = args.componentKey;
+      }
+
       // Check knowledge store for recipes
       const recipe = knowledgeStore.getComponent(args.name || result?.name);
       const hints = [];

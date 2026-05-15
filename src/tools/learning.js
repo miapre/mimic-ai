@@ -285,11 +285,18 @@ function register(server, context) {
       // If componentKey is missing, auto-resolve from DS cache by searching component name
       for (const comp of components) {
         let resolvedKey = comp.componentKey || null;
+        // Strategy 1: Check session insertion tracking (most reliable — actual keys used during build)
+        if (!resolvedKey && session._componentInsertions) {
+          for (const [instanceName, key] of Object.entries(session._componentInsertions)) {
+            if (instanceName.toLowerCase().includes(compName) || compName.includes(instanceName.toLowerCase())) {
+              resolvedKey = key;
+              break;
+            }
+          }
+        }
+        // Strategy 2: Search DS cache by name (fallback)
         if (!resolvedKey && dsCache && dsCache.components) {
-          const compName = (comp.name || '').toLowerCase();
-          // Extract the leaf name (e.g. "Buttons/Button" → "button")
           const leafName = compName.split('/').pop().trim();
-          // Try exact match first, then leaf-name match on component sets
           for (const [key, cached] of dsCache.components) {
             const cachedName = (cached.name || '').toLowerCase();
             if (cachedName === compName) { resolvedKey = key; break; }
