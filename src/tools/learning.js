@@ -282,11 +282,22 @@ function register(server, context) {
 
       // ── Persist learning data ──────────────────────────────────
       // Auto-save component usage as recipes (name + instances + keys if available)
+      // If componentKey is missing, auto-resolve from DS cache by searching component name
       for (const comp of components) {
+        let resolvedKey = comp.componentKey || null;
+        if (!resolvedKey && dsCache && dsCache.components) {
+          const compName = (comp.name || '').toLowerCase();
+          for (const [key, cached] of dsCache.components) {
+            if ((cached.name || '').toLowerCase() === compName) {
+              resolvedKey = key;
+              break;
+            }
+          }
+        }
         const existing = knowledgeStore.getComponent(comp.name);
         const recipe = existing
-          ? { ...existing, instances: (existing.instances || 0) + (comp.instances || 0), buildCount: (existing.buildCount || 0) + 1 }
-          : { instances: comp.instances || 0, buildCount: 1, componentKey: comp.componentKey || null, variantConfig: comp.variantConfig || null };
+          ? { ...existing, instances: (existing.instances || 0) + (comp.instances || 0), buildCount: (existing.buildCount || 0) + 1, componentKey: existing.componentKey || resolvedKey }
+          : { instances: comp.instances || 0, buildCount: 1, componentKey: resolvedKey, variantConfig: comp.variantConfig || null };
         knowledgeStore.setComponent(comp.name, recipe);
       }
 
