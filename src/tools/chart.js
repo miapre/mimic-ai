@@ -335,7 +335,9 @@ async function buildBarChart(collector, bridge, cardId, geometry, palette, dimen
   }
 
   if (yAxisId) {
-    for (const tick of yAxis.ticks) {
+    // Reverse: highest value at top, 0 at bottom (SPACE_BETWEEN distributes top→bottom)
+    const reversedTicks = [...yAxis.ticks].reverse();
+    for (const tick of reversedTicks) {
       try {
         await collector.send('create_text', {
           parentId: yAxisId,
