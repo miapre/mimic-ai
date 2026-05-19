@@ -247,6 +247,28 @@ manual use if needed, but `mimic_discover_ds` replaces the
     full results in the conversation. A build without a visible
     report is incomplete.
 
+## Template Replay
+
+When `figma_insert_component` returns `_autoApplied`, variant
+properties from a confirmed/verified recipe were automatically
+applied. **Do NOT call `figma_set_variant` again for the same
+properties** — they are already set.
+
+Check `_autoApplied.variants` in the response:
+- If present: skip `figma_set_variant` for those properties.
+  Only call it if the HTML requires DIFFERENT values than what
+  was auto-applied.
+- If absent: recipe was not replayed (new component, opted out,
+  or no stored variants). Configure manually as usual.
+
+To opt out for a specific insert (e.g., when you know this
+instance needs different variants), pass `applyRecipe: false`
+to `figma_insert_component`.
+
+Template replay only applies variant configs — text overrides
+still require `figma_set_component_text` for every instance
+(text content varies).
+
 ## Bulk Table Builder
 
 For any HTML with a data table, use `mimic_build_table` instead
