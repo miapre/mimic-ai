@@ -68,6 +68,22 @@ class FigmaRest {
     return this.parseStylesResponse(raw);
   }
 
+  /** Get all published FILL styles (color styles) from a file */
+  async getFileFillStyles(fileKey) {
+    const raw = await this._get(`/files/${fileKey}/styles`);
+    return this.parseFillStylesResponse(raw);
+  }
+
+  /** Get all published styles from a file (all types) */
+  async getAllStyles(fileKey) {
+    const raw = await this._get(`/files/${fileKey}/styles`);
+    return {
+      textStyles: this.parseStylesResponse(raw),
+      fillStyles: this.parseFillStylesResponse(raw),
+      effectStyles: this.parseEffectStylesResponse(raw),
+    };
+  }
+
   /** Parse the /components response into a flat array */
   parseComponentsResponse(raw) {
     const components = raw?.meta?.components;
@@ -86,6 +102,32 @@ class FigmaRest {
     if (!Array.isArray(styles)) return [];
     return styles
       .filter(s => s.style_type === 'TEXT')
+      .map(s => ({
+        key: s.key,
+        name: s.name,
+        description: s.description || '',
+      }));
+  }
+
+  /** Parse the /styles response, keeping only FILL styles */
+  parseFillStylesResponse(raw) {
+    const styles = raw?.meta?.styles;
+    if (!Array.isArray(styles)) return [];
+    return styles
+      .filter(s => s.style_type === 'FILL')
+      .map(s => ({
+        key: s.key,
+        name: s.name,
+        description: s.description || '',
+      }));
+  }
+
+  /** Parse the /styles response, keeping only EFFECT styles */
+  parseEffectStylesResponse(raw) {
+    const styles = raw?.meta?.styles;
+    if (!Array.isArray(styles)) return [];
+    return styles
+      .filter(s => s.style_type === 'EFFECT')
       .map(s => ({
         key: s.key,
         name: s.name,

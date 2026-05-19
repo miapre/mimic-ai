@@ -27,22 +27,32 @@ function register(server, context) {
   // ── figma_set_node_fill ───────────────────────────────────────
   registerTool(
     'figma_set_node_fill',
-    'Sets the fill of a node to a DS color variable.',
+    'Sets the fill of a node to a DS fill style, color variable, or raw color. Priority: fillStyleId (DS color style) → fillVariable (DS variable) → fill (raw hex/RGB).',
     {
       type: 'object',
       properties: {
         nodeId: { type: 'string', description: 'Node ID.' },
+        fillStyleId: { type: 'string', description: 'DS fill style key (from discovery). Preferred for DS compliance — imports the style from the library.' },
         fillVariable: { type: 'string', description: 'DS variable path for the fill color.' },
+        fill: { description: 'Raw color as hex string ("#3b36f2") or RGB object ({r,g,b} in 0-1 or 0-255 range). Fallback when no DS styles/variables available.' },
       },
-      required: ['nodeId', 'fillVariable'],
+      required: ['nodeId'],
     },
     async (args) => {
-      const validation = dsCache.validateVariables(args);
-      if (!validation.valid) {
+      // Validate DS variable if provided
+      if (args.fillVariable) {
+        const validation = dsCache.validateVariables(args);
+        if (!validation.valid) {
+          return {
+            error: 'INVALID_VARIABLE_PATHS',
+            warnings: validation.warnings,
+            message: 'Fix the variable paths and try again. Do not proceed with invalid paths.',
+          };
+        }
+      } else if (!args.fillStyleId && !args.fill && !args.rawColor) {
         return {
-          error: 'INVALID_VARIABLE_PATHS',
-          warnings: validation.warnings,
-          message: 'Fix the variable paths and try again. Do not proceed with invalid paths.',
+          error: 'MISSING_COLOR',
+          message: 'One of fillStyleId, fillVariable, or fill is required.',
         };
       }
       const result = await bridge.send('set_node_fill', args);

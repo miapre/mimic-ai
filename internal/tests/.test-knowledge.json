@@ -5,9 +5,22 @@
   "patterns": {},
   "gaps": {},
   "libraryFileKeys": {},
+  "buildHistory": [
+    {
+      "screenName": "mimic-build",
+      "buildNumber": 2,
+      "date": "2026-05-19T13:11:06.555Z",
+      "toolCalls": 0,
+      "cacheHits": 0,
+      "componentCount": 0,
+      "primitiveCount": 0,
+      "bindingFailures": 0,
+      "componentUsagePercent": 100
+    }
+  ],
   "meta": {
     "buildCount": 1,
-    "lastBuild": "2026-05-15T17:17:25.794Z",
-    "created": "2026-05-15T17:17:25.793Z"
+    "lastBuild": "2026-05-19T13:11:06.555Z",
+    "created": "2026-05-19T13:11:06.554Z"
   }
 }

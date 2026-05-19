@@ -384,18 +384,24 @@ class ChartCalculator {
         const y = cy + levelRadius * Math.sin(angle);
         ringPoints.push(`${x.toFixed(2)},${y.toFixed(2)}`);
       }
+      // Filled polygon with low opacity instead of stroke (Figma renders strokes as thick blobs)
+      const opacity = (0.03 + (level / gridLevels) * 0.12).toFixed(2);
       gridParts.push(
-        `<polygon points="${ringPoints.join(' ')}" fill="none" stroke="#e0e0e0" stroke-width="1"/>`,
+        `<polygon points="${ringPoints.join(' ')}" fill="#e0e0e0" fill-opacity="${opacity}" />`,
       );
     }
 
-    // Axis lines from center to each vertex direction
+    // Axis lines from center to each vertex direction — thin filled ribbons instead of stroked lines
     for (let i = 0; i < n; i++) {
       const angle = startAngle + i * angleStep;
       const x = cx + radius * Math.cos(angle);
       const y = cy + radius * Math.sin(angle);
+      // Build a 1px-thick filled ribbon perpendicular to the line direction
+      const perpAngle = angle + Math.PI / 2;
+      const dx = 0.5 * Math.cos(perpAngle);
+      const dy = 0.5 * Math.sin(perpAngle);
       gridParts.push(
-        `<line x1="${cx}" y1="${cy}" x2="${x.toFixed(2)}" y2="${y.toFixed(2)}" stroke="#e0e0e0" stroke-width="1"/>`,
+        `<polygon points="${(cx + dx).toFixed(2)},${(cy + dy).toFixed(2)} ${(x + dx).toFixed(2)},${(y + dy).toFixed(2)} ${(x - dx).toFixed(2)},${(y - dy).toFixed(2)} ${(cx - dx).toFixed(2)},${(cy - dy).toFixed(2)}" fill="#e0e0e0" fill-opacity="0.15" />`,
       );
     }
 

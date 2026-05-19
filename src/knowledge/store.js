@@ -13,6 +13,7 @@ function createEmptyStore() {
     patterns: {},
     gaps: {},
     libraryFileKeys: {},
+    buildHistory: [],
     meta: {
       buildCount: 0,
       lastBuild: null,
@@ -41,6 +42,7 @@ class KnowledgeStore {
       this.data = parsed;
       // Backfill new fields for existing stores
       if (!this.data.libraryFileKeys) this.data.libraryFileKeys = {};
+      if (!this.data.buildHistory) this.data.buildHistory = [];
       // Backfill confidence on components that predate the promotion system
       for (const comp of Object.values(this.data.components || {})) {
         if (!comp.confidence) comp.confidence = 'new';
@@ -128,6 +130,37 @@ class KnowledgeStore {
 
   getLibraryFileKey(libraryName) {
     return this.data.libraryFileKeys?.[libraryName] || null;
+  }
+
+  // ── Build History ───────────────────────────────────────────
+
+  /**
+   * Record a build snapshot for cross-build comparison.
+   * Keeps the last 20 entries to avoid unbounded growth.
+   */
+  recordBuild({ screenName, toolCalls, cacheHits, componentCount, primitiveCount, bindingFailures, componentUsagePercent }) {
+    if (!this.data.buildHistory) this.data.buildHistory = [];
+    this.data.buildHistory.push({
+      screenName,
+      buildNumber: this.data.meta.buildCount + 1,
+      date: new Date().toISOString(),
+      toolCalls: toolCalls || 0,
+      cacheHits: cacheHits || 0,
+      componentCount: componentCount || 0,
+      primitiveCount: primitiveCount || 0,
+      bindingFailures: bindingFailures || 0,
+      componentUsagePercent: componentUsagePercent || 0,
+    });
+    // Keep only last 20 builds
+    if (this.data.buildHistory.length > 20) {
+      this.data.buildHistory = this.data.buildHistory.slice(-20);
+    }
+    return this;
+  }
+
+  /** Returns build history array (most recent last). */
+  getBuildHistory() {
+    return this.data.buildHistory || [];
   }
 
   // ── Meta ────────────────────────────────────────────────────

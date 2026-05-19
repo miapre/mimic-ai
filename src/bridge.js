@@ -127,8 +127,13 @@ class Bridge {
 
     const promise = new Promise((resolve, reject) => {
       if (!this.connected || !this.ws) {
-        // Queue for later
-        this.pendingOps.push({ msg, resolve, reject, timeout: effectiveTimeout });
+        // Fail fast — don't queue indefinitely when the plugin is disconnected.
+        // The user gets a clear error and can reconnect the plugin and retry.
+        reject(new Error(
+          `PLUGIN_DISCONNECTED: Cannot execute "${type}" — the Figma plugin is not connected. ` +
+          `Open Figma and run the Mimic AI plugin (Plugins > Development > Mimic AI > Run), ` +
+          `then retry the operation.`
+        ));
         return;
       }
 
@@ -148,7 +153,7 @@ class Bridge {
    * @returns {Promise<{results: Array, totalOps: number, succeeded: number, failed: number}>}
    */
   sendBatch(operations, timeout) {
-    const CHUNK_SIZE = 200;
+    const CHUNK_SIZE = 10;
 
     // Normalize node IDs but preserve $resultOf references
     const normalizedOps = operations.map(op => {
@@ -168,7 +173,10 @@ class Bridge {
 
       return new Promise((resolve, reject) => {
         if (!this.connected || !this.ws) {
-          this.pendingOps.push({ msg, resolve, reject, timeout: effectiveTimeout });
+          reject(new Error(
+            `PLUGIN_DISCONNECTED: Cannot execute batch — the Figma plugin is not connected. ` +
+            `Open Figma and run the Mimic AI plugin, then retry.`
+          ));
           return;
         }
         this._dispatch(msg, resolve, reject, effectiveTimeout);
@@ -184,7 +192,7 @@ class Bridge {
    * Cross-chunk $resultOf references are resolved by remapping indices.
    */
   async _sendBatchChunked(operations, timeout) {
-    const CHUNK_SIZE = 200;
+    const CHUNK_SIZE = 10;
     const allResults = [];
     let offset = 0;
 
@@ -221,7 +229,10 @@ class Bridge {
 
       const chunkResult = await new Promise((resolve, reject) => {
         if (!this.connected || !this.ws) {
-          this.pendingOps.push({ msg, resolve, reject, timeout: effectiveTimeout });
+          reject(new Error(
+            `PLUGIN_DISCONNECTED: Cannot execute batch chunk — the Figma plugin is not connected. ` +
+            `Open Figma and run the Mimic AI plugin, then retry.`
+          ));
           return;
         }
         this._dispatch(msg, resolve, reject, effectiveTimeout);

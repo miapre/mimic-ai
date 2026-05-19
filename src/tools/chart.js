@@ -851,6 +851,29 @@ async function buildLineChart(collector, bridge, cardId, geometry, palette, seri
         fail('data-point', err);
       }
     }
+
+    // Score labels (native text above each data point)
+    for (let i = 0; i < points.length; i++) {
+      const pt = points[i];
+      // Format the value for display
+      const displayValue = Number.isInteger(pt.y) ? String(pt.y) : pt.y.toFixed(1);
+      try {
+        await bridge.send('create_text', {
+          parentId: realPlotId,
+          name: `Score: ${pt.label}`,
+          content: displayValue,
+          textStyleId: theme.labelStyle,
+          fillVariable: theme.labelColor,
+          x: pt.px - 12,
+          y: pt.py - 18,
+          textAlignHorizontal: 'CENTER',
+        });
+        op();
+        results.elements.texts++;
+      } catch (err) {
+        fail('score-label', err);
+      }
+    }
   }
 
   // ── X-axis labels ──

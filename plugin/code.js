@@ -234,8 +234,78 @@ function hexToRgb(hex) {
   return { r: r, g: g, b: b };
 }
 
-function applySolidFill(node, hex) {
-  var rgb = hexToRgb(hex);
+/**
+ * Normalize a color value to Figma RGB {r,g,b} (0-1 range).
+ * Accepts:
+ *   - hex string: "#ffffff", "fff", "ffffff"
+ *   - RGB object (0-1): {r: 0.5, g: 0.5, b: 0.5}
+ *   - RGB object (0-255): {r: 128, g: 128, b: 128} — auto-detected if any value > 1
+ * Returns null if unrecognized.
+ */
+function normalizeColor(color) {
+  if (typeof color === 'string') {
+    return hexToRgb(color);
+  }
+  if (color && typeof color === 'object' && 'r' in color && 'g' in color && 'b' in color) {
+    var r = color.r, g = color.g, b = color.b;
+    // Auto-detect 0-255 range vs 0-1 range
+    if (r > 1 || g > 1 || b > 1) {
+      return { r: r / 255, g: g / 255, b: b / 255 };
+    }
+    return { r: r, g: g, b: b };
+  }
+  return null;
+}
+
+/**
+ * Apply a fill style by key. Imports from library if needed.
+ * Returns true if applied, false if not found.
+ * Includes a 10s timeout to prevent hanging on unresolvable imports.
+ */
+async function applyFillStyle(node, styleKey) {
+  try {
+    var style = styleCache.get(styleKey);
+    if (!style || style.type !== 'PAINT') {
+      // Import with timeout — figma.importStyleByKeyAsync can hang indefinitely
+      style = await Promise.race([
+        figma.importStyleByKeyAsync(styleKey),
+        new Promise(function (_, reject) {
+          setTimeout(function () { reject(new Error('FILL_STYLE_IMPORT_TIMEOUT')); }, 10000);
+        })
+      ]);
+    }
+    if (style && style.type === 'PAINT') {
+      // Text nodes use range-based fill styles, not fillStyleId
+      if (node.type === 'TEXT') {
+        var len = (node.characters || '').length;
+        if (len > 0) {
+          node.setRangeFillStyleId(0, len, style.id);
+        } else {
+          // No characters yet — set fills directly from the style's paints
+          node.fills = style.paints || [];
+        }
+      } else {
+        node.fillStyleId = style.id;
+      }
+      styleCache.set(styleKey, style);
+      return true;
+    }
+    // Style imported but wrong type — cache it anyway to avoid re-import
+    if (style) styleCache.set(styleKey, style);
+    return false;
+  } catch (e) {
+    if (e && e.message === 'FILL_STYLE_IMPORT_TIMEOUT') {
+      console.error('[Mimic] Fill style import timed out for key: ' + styleKey);
+    }
+    return false;
+  }
+}
+
+function applySolidFill(node, color) {
+  var rgb = normalizeColor(color);
+  if (!rgb) {
+    throw { error: 'INVALID_COLOR', message: 'Cannot parse color: ' + JSON.stringify(color) + '. Use hex string ("#ff0000") or RGB object ({r,g,b}).', recovery: 'Pass a hex string like "#3b36f2" or an RGB object like {r:0.23, g:0.21, b:0.95}.' };
+  }
   node.fills = [{ type: 'SOLID', color: rgb }];
 }
 
@@ -447,6 +517,34 @@ handlers.preload_styles = async function (payload) {
   };
 };
 
+handlers.preload_fill_styles = async function (payload) {
+  var preloadedStyles = 0;
+  var loaded = [];
+  var failed = [];
+  var styleKeys = coerceArray(payload.styleKeys);
+  if (styleKeys) {
+    for (var i = 0; i < styleKeys.length; i++) {
+      var key = styleKeys[i];
+      try {
+        var style = await figma.importStyleByKeyAsync(key);
+        if (style && style.type === 'PAINT') {
+          styleCache.set(key, style);
+          loaded.push({ key: key, name: style.name });
+          preloadedStyles++;
+        }
+      } catch (e) {
+        failed.push(key);
+      }
+    }
+  }
+  return {
+    preloadedFillStyles: preloadedStyles,
+    failed: failed.length,
+    styleCacheSize: styleCache.size,
+    styles: loaded,
+  };
+};
+
 handlers.preload_variables = async function (payload) {
   var preloadedVars = 0;
   var variables = coerceArray(payload.variables);
@@ -622,7 +720,7 @@ handlers.discover_library_components = async function (payload) {
   };
 };
 
-handlers.create_frame = function (payload) {
+handlers.create_frame = async function (payload) {
   var parent = getParent(payload.parentId);
   var frame = figma.createFrame();
   var bt = createBindingTracker();
@@ -714,26 +812,57 @@ handlers.create_frame = function (payload) {
     frame.paddingLeft = payload.padding;
   }
 
-  // Fill (color variable)
-  if (payload.fillVariable) {
-    bt.track('fillVariable', bindFillVariable(frame, payload.fillVariable), 'variable "' + payload.fillVariable + '" not found in cache (' + variableCache.size + ' cached)');
-  } else if (payload.fill) {
+  // Fill (style → variable → raw color → fills array — with fallback chain)
+  var fillApplied = false;
+  if (payload.fillStyleId) {
+    fillApplied = await applyFillStyle(frame, payload.fillStyleId);
+    bt.track('fillStyleId', fillApplied, fillApplied ? null : 'fill style "' + payload.fillStyleId + '" not importable — falling through to fill/rawColor');
+  }
+  if (!fillApplied && payload.fillVariable) {
+    fillApplied = bindFillVariable(frame, payload.fillVariable);
+    bt.track('fillVariable', fillApplied, 'variable "' + payload.fillVariable + '" not found in cache (' + variableCache.size + ' cached)');
+  }
+  if (!fillApplied && payload.fill) {
     applySolidFill(frame, payload.fill);
-  } else {
-    // Default: no fill (transparent)
+    fillApplied = true;
+  }
+  if (!fillApplied && payload.rawColor) {
+    applySolidFill(frame, payload.rawColor);
+    fillApplied = true;
+  }
+  if (!fillApplied && payload.fills && Array.isArray(payload.fills) && payload.fills.length > 0) {
+    var firstFill = payload.fills[0];
+    if (firstFill && firstFill.color) {
+      applySolidFill(frame, firstFill.color);
+      fillApplied = true;
+    }
+  }
+  if (!fillApplied) {
     frame.fills = [];
   }
 
-  // Stroke
+  // Stroke (variable, single color, or strokes array)
   if (payload.strokeVariable) {
     bt.track('strokeVariable', bindStrokeVariable(frame, payload.strokeVariable), 'variable "' + payload.strokeVariable + '" not found');
     if (typeof payload.strokeWeight === 'number') frame.strokeWeight = payload.strokeWeight;
     if (payload.strokeAlign) frame.strokeAlign = payload.strokeAlign;
   } else if (payload.stroke) {
-    var strokeRgb = hexToRgb(payload.stroke);
+    var strokeRgb = normalizeColor(payload.stroke);
+    if (!strokeRgb) throw { error: 'INVALID_COLOR', message: 'Cannot parse stroke color: ' + JSON.stringify(payload.stroke), recovery: 'Use hex string or RGB object.' };
     frame.strokes = [{ type: 'SOLID', color: strokeRgb }];
     if (typeof payload.strokeWeight === 'number') frame.strokeWeight = payload.strokeWeight;
     if (payload.strokeAlign) frame.strokeAlign = payload.strokeAlign;
+  } else if (payload.strokes && Array.isArray(payload.strokes) && payload.strokes.length > 0) {
+    var firstStroke = payload.strokes[0];
+    if (firstStroke && firstStroke.color) {
+      var sRgb = normalizeColor(firstStroke.color);
+      if (sRgb) {
+        frame.strokes = [{ type: 'SOLID', color: sRgb }];
+        if (typeof payload.strokeWeight === 'number') frame.strokeWeight = payload.strokeWeight;
+        else frame.strokeWeight = 1;
+        if (payload.strokeAlign) frame.strokeAlign = payload.strokeAlign;
+      }
+    }
   }
 
   // Corner radius (radius variable)
@@ -771,8 +900,33 @@ handlers.create_frame = function (payload) {
   }
 
   // Apply position AFTER appendChild
-  if (typeof deferX === 'number') frame.x = deferX;
-  if (typeof deferY === 'number') frame.y = deferY;
+  // Auto-position: when parent is a SECTION or PAGE and no x/y provided,
+  // place to the right of the rightmost sibling with 80px gap.
+  if (typeof deferX !== 'number' && typeof deferY !== 'number') {
+    var isSection = parent.type === 'SECTION';
+    var isPage = parent.type === 'PAGE';
+    if (isSection || isPage) {
+      var rightmostX = 0;
+      var rightmostW = 0;
+      var siblings = parent.children;
+      for (var si = 0; si < siblings.length; si++) {
+        var sib = siblings[si];
+        if (sib.id === frame.id) continue;
+        var sibRight = sib.x + sib.width;
+        if (sibRight > rightmostX + rightmostW) {
+          rightmostX = sib.x;
+          rightmostW = sib.width;
+        }
+      }
+      if (siblings.length > 1) { // more than just the new frame
+        frame.x = rightmostX + rightmostW + 80;
+        frame.y = siblings[0].id !== frame.id ? siblings[0].y : 0;
+      }
+    }
+  } else {
+    if (typeof deferX === 'number') frame.x = deferX;
+    if (typeof deferY === 'number') frame.y = deferY;
+  }
 
   var bindingResult = bt.result();
   return {
@@ -834,11 +988,21 @@ handlers.create_text = async function (payload) {
   if (payload.lineHeightVariable) bt.track('lineHeightVariable', bindVariable(text, 'lineHeight', payload.lineHeightVariable), 'variable "' + payload.lineHeightVariable + '" not found');
   if (payload.letterSpacingVariable) bt.track('letterSpacingVariable', bindVariable(text, 'letterSpacing', payload.letterSpacingVariable), 'variable "' + payload.letterSpacingVariable + '" not found');
 
-  // Fill (text color)
-  if (payload.fillVariable) {
-    bt.track('fillVariable', bindFillVariable(text, payload.fillVariable), 'variable "' + payload.fillVariable + '" not found in cache (' + variableCache.size + ' cached)');
-  } else if (payload.fill) {
+  // Fill (text color: style → variable → raw — with fallback)
+  var textFillApplied = false;
+  if (payload.fillStyleId) {
+    textFillApplied = await applyFillStyle(text, payload.fillStyleId);
+    bt.track('fillStyleId', textFillApplied, textFillApplied ? null : 'fill style not importable — falling through');
+  }
+  if (!textFillApplied && payload.fillVariable) {
+    textFillApplied = bindFillVariable(text, payload.fillVariable);
+    bt.track('fillVariable', textFillApplied, 'variable not found');
+  }
+  if (!textFillApplied && payload.fill) {
     applySolidFill(text, payload.fill);
+  }
+  if (!textFillApplied && !payload.fill && payload.rawColor) {
+    applySolidFill(text, payload.rawColor);
   }
 
   // Text auto-resize
@@ -991,7 +1155,7 @@ handlers.insert_component = function (payload) {
 
 // ── Stubs for Task 9 — Shape creation ──────────────────────────────────────────
 
-handlers.create_rectangle = function (payload) {
+handlers.create_rectangle = async function (payload) {
   enforceColorFill(payload, 'RECTANGLE');
   var parent = getParent(payload.parentId);
   var rect = figma.createRectangle();
@@ -1000,19 +1164,43 @@ handlers.create_rectangle = function (payload) {
   rect.name = payload.name || 'Rectangle';
 
   // Sizing (defer FILL to after appendChild)
-  if (payload.width && payload.height) rect.resize(payload.width, payload.height);
-  var deferRectSizingH = payload.layoutSizingHorizontal;
-  var deferRectSizingV = payload.layoutSizingVertical;
+  // Handle partial dimensions: width-only, height-only, or both.
+  // Figma's resize() requires both — use current dimension as fallback.
+  var hasW = typeof payload.width === 'number';
+  var hasH = typeof payload.height === 'number';
+  if (hasW && hasH) {
+    rect.resize(payload.width, payload.height);
+  } else if (hasW) {
+    rect.resize(payload.width, rect.height);
+  } else if (hasH) {
+    rect.resize(rect.width, payload.height);
+  }
+  // Auto-default: when dimensions are specified, default to FIXED so auto-layout
+  // doesn't stretch the rectangle. Explicit layoutSizing overrides this.
+  var deferRectSizingH = payload.layoutSizingHorizontal
+    || (hasW ? 'FIXED' : undefined);
+  var deferRectSizingV = payload.layoutSizingVertical
+    || (hasH ? 'FIXED' : undefined);
 
   // Position
   if (typeof payload.x === 'number') rect.x = payload.x;
   if (typeof payload.y === 'number') rect.y = payload.y;
 
-  // Fill
-  if (payload.fillVariable) {
-    bt.track('fillVariable', bindFillVariable(rect, payload.fillVariable), 'variable "' + payload.fillVariable + '" not found');
-  } else if (payload.fill) {
-    applySolidFill(rect, payload.fill);
+  // Fill (style → variable → raw — with fallback)
+  var rectFillApplied = false;
+  if (payload.fillStyleId) {
+    rectFillApplied = await applyFillStyle(rect, payload.fillStyleId);
+    bt.track('fillStyleId', rectFillApplied, rectFillApplied ? null : 'fill style not importable — falling through');
+  }
+  if (!rectFillApplied && payload.fillVariable) {
+    rectFillApplied = bindFillVariable(rect, payload.fillVariable);
+    bt.track('fillVariable', rectFillApplied, 'variable not found');
+  }
+  if (!rectFillApplied && payload.fill) { applySolidFill(rect, payload.fill); rectFillApplied = true; }
+  if (!rectFillApplied && payload.rawColor) { applySolidFill(rect, payload.rawColor); rectFillApplied = true; }
+  if (!rectFillApplied && payload.fills && Array.isArray(payload.fills) && payload.fills.length > 0) {
+    var rectFirstFill = payload.fills[0];
+    if (rectFirstFill && rectFirstFill.color) { applySolidFill(rect, rectFirstFill.color); rectFillApplied = true; }
   }
 
   // Stroke
@@ -1021,10 +1209,20 @@ handlers.create_rectangle = function (payload) {
     if (typeof payload.strokeWeight === 'number') rect.strokeWeight = payload.strokeWeight;
     if (payload.strokeAlign) rect.strokeAlign = payload.strokeAlign;
   } else if (payload.stroke) {
-    var strokeRgb = hexToRgb(payload.stroke);
+    var strokeRgb = normalizeColor(payload.stroke);
+    if (!strokeRgb) throw { error: 'INVALID_COLOR', message: 'Cannot parse stroke color: ' + JSON.stringify(payload.stroke), recovery: 'Use hex string or RGB object.' };
     rect.strokes = [{ type: 'SOLID', color: strokeRgb }];
     if (typeof payload.strokeWeight === 'number') rect.strokeWeight = payload.strokeWeight;
     if (payload.strokeAlign) rect.strokeAlign = payload.strokeAlign;
+  } else if (payload.strokes && Array.isArray(payload.strokes) && payload.strokes.length > 0) {
+    var firstStroke = payload.strokes[0];
+    if (firstStroke && firstStroke.color) {
+      var sRgb = normalizeColor(firstStroke.color);
+      if (sRgb) {
+        rect.strokes = [{ type: 'SOLID', color: sRgb }];
+        if (typeof payload.strokeWeight === 'number') rect.strokeWeight = payload.strokeWeight;
+      }
+    }
   }
 
   // Corner radius
@@ -1067,7 +1265,7 @@ handlers.create_rectangle = function (payload) {
   };
 };
 
-handlers.create_ellipse = function (payload) {
+handlers.create_ellipse = async function (payload) {
   enforceColorFill(payload, 'ELLIPSE');
   var parent = getParent(payload.parentId);
   var ellipse = figma.createEllipse();
@@ -1076,9 +1274,13 @@ handlers.create_ellipse = function (payload) {
   ellipse.name = payload.name || 'Ellipse';
 
   // Sizing (defer FILL to after appendChild)
-  if (payload.width && payload.height) ellipse.resize(payload.width, payload.height);
-  var deferEllipseSizingH = payload.layoutSizingHorizontal;
-  var deferEllipseSizingV = payload.layoutSizingVertical;
+  var eHasW = typeof payload.width === 'number';
+  var eHasH = typeof payload.height === 'number';
+  if (eHasW && eHasH) ellipse.resize(payload.width, payload.height);
+  else if (eHasW) ellipse.resize(payload.width, ellipse.height);
+  else if (eHasH) ellipse.resize(ellipse.width, payload.height);
+  var deferEllipseSizingH = payload.layoutSizingHorizontal || (eHasW ? 'FIXED' : undefined);
+  var deferEllipseSizingV = payload.layoutSizingVertical || (eHasH ? 'FIXED' : undefined);
 
   // Arc data (for donut segments)
   if (payload.arcData) {
@@ -1093,11 +1295,21 @@ handlers.create_ellipse = function (payload) {
   if (typeof payload.x === 'number') ellipse.x = payload.x;
   if (typeof payload.y === 'number') ellipse.y = payload.y;
 
-  // Fill
-  if (payload.fillVariable) {
-    bt.track('fillVariable', bindFillVariable(ellipse, payload.fillVariable), 'variable "' + payload.fillVariable + '" not found');
-  } else if (payload.fill) {
-    applySolidFill(ellipse, payload.fill);
+  // Fill (style → variable → raw — with fallback)
+  var ellFillApplied = false;
+  if (payload.fillStyleId) {
+    ellFillApplied = await applyFillStyle(ellipse, payload.fillStyleId);
+    bt.track('fillStyleId', ellFillApplied, ellFillApplied ? null : 'fill style not importable — falling through');
+  }
+  if (!ellFillApplied && payload.fillVariable) {
+    ellFillApplied = bindFillVariable(ellipse, payload.fillVariable);
+    bt.track('fillVariable', ellFillApplied, 'variable not found');
+  }
+  if (!ellFillApplied && payload.fill) { applySolidFill(ellipse, payload.fill); ellFillApplied = true; }
+  if (!ellFillApplied && payload.rawColor) { applySolidFill(ellipse, payload.rawColor); ellFillApplied = true; }
+  if (!ellFillApplied && payload.fills && Array.isArray(payload.fills) && payload.fills.length > 0) {
+    var ellipseFirstFill = payload.fills[0];
+    if (ellipseFirstFill && ellipseFirstFill.color) { applySolidFill(ellipse, ellipseFirstFill.color); ellFillApplied = true; }
   }
 
   // Stroke
@@ -1156,9 +1368,13 @@ handlers.create_svg = function (payload) {
   if (typeof payload.y === 'number') svgNode.y = payload.y;
 
   // Sizing (defer FILL to after appendChild)
-  if (payload.width && payload.height) svgNode.resize(payload.width, payload.height);
-  var deferSvgSizingH = payload.layoutSizingHorizontal;
-  var deferSvgSizingV = payload.layoutSizingVertical;
+  var sHasW = typeof payload.width === 'number';
+  var sHasH = typeof payload.height === 'number';
+  if (sHasW && sHasH) svgNode.resize(payload.width, payload.height);
+  else if (sHasW) svgNode.resize(payload.width, svgNode.height);
+  else if (sHasH) svgNode.resize(svgNode.width, payload.height);
+  var deferSvgSizingH = payload.layoutSizingHorizontal || (sHasW ? 'FIXED' : undefined);
+  var deferSvgSizingV = payload.layoutSizingVertical || (sHasH ? 'FIXED' : undefined);
 
   // Optionally apply fill/stroke variables to child vectors
   var bt = createBindingTracker();
@@ -1406,18 +1622,27 @@ handlers.set_text = function (payload) {
   };
 };
 
-handlers.set_node_fill = function (payload) {
+handlers.set_node_fill = async function (payload) {
   var node = figma.getNodeById(normalizeNodeId(payload.nodeId));
   if (!node) throw { error: 'NODE_NOT_FOUND', property: 'nodeId', message: 'Node not found: ' + payload.nodeId, available: [], recovery: 'Check nodeId.' };
   var bt = createBindingTracker();
 
-  if (payload.fillVariable) {
-    bt.track('fillVariable', bindFillVariable(node, payload.fillVariable), 'variable "' + payload.fillVariable + '" not found in cache (' + variableCache.size + ' cached)');
-  } else if (payload.fill) {
-    applySolidFill(node, payload.fill);
-  } else {
-    node.fills = [];
+  var snfApplied = false;
+  if (payload.fillStyleId) {
+    snfApplied = await applyFillStyle(node, payload.fillStyleId);
+    bt.track('fillStyleId', snfApplied, snfApplied ? null : 'fill style not importable — falling through');
   }
+  if (!snfApplied && payload.fillVariable) {
+    snfApplied = bindFillVariable(node, payload.fillVariable);
+    bt.track('fillVariable', snfApplied, 'variable not found');
+  }
+  if (!snfApplied && payload.fill) { applySolidFill(node, payload.fill); snfApplied = true; }
+  if (!snfApplied && payload.rawColor) { applySolidFill(node, payload.rawColor); snfApplied = true; }
+  if (!snfApplied && payload.fills && Array.isArray(payload.fills) && payload.fills.length > 0) {
+    var snfFirstFill = payload.fills[0];
+    if (snfFirstFill && snfFirstFill.color) { applySolidFill(node, snfFirstFill.color); snfApplied = true; }
+  }
+  if (!snfApplied) { node.fills = []; }
 
   var bindingResult = bt.result();
   return {

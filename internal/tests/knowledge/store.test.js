@@ -75,6 +75,47 @@ describe('KnowledgeStore', () => {
     assert.equal(store.getLibraryFileKey('Test'), 'key123');
   });
 
+  it('records build history', () => {
+    const store = new KnowledgeStore(TEST_PATH);
+    store.recordBuild({ screenName: 'Dashboard', toolCalls: 120, cacheHits: 5, componentCount: 8, primitiveCount: 3, bindingFailures: 1, componentUsagePercent: 73 });
+    store.recordBuild({ screenName: 'Settings', toolCalls: 80, cacheHits: 15, componentCount: 10, primitiveCount: 2, bindingFailures: 0, componentUsagePercent: 83 });
+    const history = store.getBuildHistory();
+    assert.equal(history.length, 2);
+    assert.equal(history[0].screenName, 'Dashboard');
+    assert.equal(history[0].toolCalls, 120);
+    assert.equal(history[1].toolCalls, 80);
+  });
+
+  it('caps build history at 20 entries', () => {
+    const store = new KnowledgeStore(TEST_PATH);
+    for (let i = 0; i < 25; i++) {
+      store.recordBuild({ screenName: `Screen ${i}`, toolCalls: 100 - i, cacheHits: i, componentCount: 5, primitiveCount: 2, bindingFailures: 0, componentUsagePercent: 71 });
+    }
+    assert.equal(store.getBuildHistory().length, 20);
+    assert.equal(store.getBuildHistory()[0].screenName, 'Screen 5');
+  });
+
+  it('persists build history across save/load', () => {
+    const store = new KnowledgeStore(TEST_PATH);
+    store.recordBuild({ screenName: 'Test', toolCalls: 50, cacheHits: 10, componentCount: 4, primitiveCount: 1, bindingFailures: 0, componentUsagePercent: 80 });
+    store.save();
+    const store2 = new KnowledgeStore(TEST_PATH);
+    store2.load();
+    assert.equal(store2.getBuildHistory().length, 1);
+    assert.equal(store2.getBuildHistory()[0].screenName, 'Test');
+  });
+
+  it('backfills buildHistory on load of old store', () => {
+    fs.writeFileSync(TEST_PATH, JSON.stringify({
+      version: 2, dsFingerprint: null,
+      components: {}, patterns: {}, gaps: {},
+      meta: { buildCount: 3, lastBuild: null, created: null }
+    }));
+    const store = new KnowledgeStore(TEST_PATH);
+    store.load();
+    assert.deepEqual(store.getBuildHistory(), []);
+  });
+
   it('tracks gap evidence', () => {
     const store = new KnowledgeStore(TEST_PATH);
     store.addGap('tab-component', {

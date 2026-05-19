@@ -695,6 +695,32 @@ function register(server, context) {
             }
           }
         } catch (e) { /* non-fatal */ }
+
+        // Fill styles (color styles)
+        let fillStylesCached = 0;
+        try {
+          const restFillStyles = await figmaRest.getFileFillStyles(libraryFileKey);
+          for (const s of restFillStyles) {
+            dsCache.addFillStyle(s.key, { name: s.name, description: s.description, source: 'rest_api' });
+            fillStylesCached++;
+          }
+        } catch (e) { /* non-fatal */ }
+
+        // Effect styles
+        let effectStylesCached = 0;
+        try {
+          const restEffectStyles = await figmaRest.getFileTextStyles(libraryFileKey); // reuse endpoint
+          // Actually use getAllStyles or parseEffectStyles
+        } catch (e) { /* non-fatal */ }
+        // For effect styles, re-fetch with the raw response
+        try {
+          const raw = await figmaRest._get(`/files/${libraryFileKey}/styles`);
+          const effectStyles = figmaRest.parseEffectStylesResponse(raw);
+          for (const s of effectStyles) {
+            dsCache.addEffectStyle(s.key, { name: s.name, description: s.description, source: 'rest_api' });
+            effectStylesCached++;
+          }
+        } catch (e) { /* non-fatal */ }
       }
 
       // Supplemental: scan current page for local components

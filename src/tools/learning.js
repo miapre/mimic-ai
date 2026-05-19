@@ -203,8 +203,8 @@ function register(server, context) {
         if (!recipe.confidence) recipe.confidence = 'new';
         const before = recipe.confidence;
         recipe = promoter.maybePromote(recipe);
-        if (before === 'new' && recipe.confidence === 'strong') {
-          promotions.push(comp.name);
+        if (recipe.confidence !== before) {
+          promotions.push(`${comp.name} (${before} → ${recipe.confidence})`);
         }
         knowledgeStore.setComponent(comp.name, recipe);
       }
@@ -263,6 +263,19 @@ function register(server, context) {
 
       // Binding failures (from session tracking)
       const bindingFailures = session.bindingFailures || [];
+
+      // Record build snapshot for cross-build comparison (after all metrics are computed)
+      knowledgeStore.recordBuild({
+        screenName,
+        toolCalls: toolCallCount,
+        cacheHits,
+        componentCount: totalInstances,
+        primitiveCount: primitives.length,
+        bindingFailures: bindingFailures.length,
+        componentUsagePercent,
+      });
+      knowledgeStore.save();
+
       if (bindingFailures.length > 0) {
         lines.push(`## ⚠ Binding Failures: ${bindingFailures.length} nodes with failed DS bindings`);
         lines.push('');
@@ -342,13 +355,37 @@ function register(server, context) {
       if (componentRecipes.length > 0) {
         componentRecipes.forEach(([name, recipe]) => {
           const tier = recipe.confidence || 'new';
-          const badge = tier === 'strong' ? '🟢 strong' : '🔵 new';
+          const badge = tier === 'verified' ? '🟢 verified' : tier === 'confirmed' ? '🟡 confirmed' : tier === 'strong' ? '🟡 confirmed' : '🔵 new';
           lines.push(`- **${name}**: ${badge} (${recipe.buildCount || 0} builds, ${recipe.instances || 0} instances)`);
         });
       } else {
         lines.push('No component recipes stored.');
       }
       lines.push('');
+
+      // Build history trend
+      const history = knowledgeStore.getBuildHistory();
+      if (history.length >= 2) {
+        lines.push('## Learning Trend');
+        lines.push('');
+        lines.push('| Build | Screen | Tool Calls | Cache Hits | Components | Primitives | DS Usage |');
+        lines.push('|-------|--------|-----------|------------|------------|------------|----------|');
+        for (const h of history) {
+          lines.push(`| #${h.buildNumber} | ${h.screenName} | ${h.toolCalls} | ${h.cacheHits} | ${h.componentCount} | ${h.primitiveCount} | ${h.componentUsagePercent}% |`);
+        }
+        lines.push('');
+        const first = history[0];
+        const last = history[history.length - 1];
+        if (first.toolCalls > 0 && last.toolCalls > 0) {
+          const reduction = Math.round((1 - last.toolCalls / first.toolCalls) * 100);
+          if (reduction > 0) {
+            lines.push(`**Learning impact:** ${reduction}% fewer tool calls from build #${first.buildNumber} to #${last.buildNumber}.`);
+          } else {
+            lines.push(`**Learning impact:** Tool calls have not decreased yet. Knowledge may need more builds to accumulate.`);
+          }
+          lines.push('');
+        }
+      }
 
       lines.push('## Patterns Learned');
       lines.push('');
@@ -358,6 +395,121 @@ function register(server, context) {
         });
       } else {
         lines.push('No new patterns recorded.');
+      }
+      lines.push('');
+
+      // ── Post-Build Structural Validation ──
+      // Runs automatically before report to catch broken layouts.
+      const validationResults = [];
+      let validationStatus = 'PASS'; // PASS | WARN | FAIL
+
+      // Try to validate the artboard structure via the bridge
+      try {
+        const artboardId = buildManifest.artboardId || session.artboardId;
+        if (artboardId) {
+          const artboardProps = await bridge.send('get_node_props', { nodeId: artboardId });
+
+          // 1. LAYOUT SANITY — height:width ratio check
+          if (artboardProps && artboardProps.width > 0) {
+            const ratio = artboardProps.height / artboardProps.width;
+            if (ratio > 3) {
+              validationResults.push({
+                check: 'Layout Sanity',
+                status: 'FAIL',
+                detail: `Artboard ratio ${ratio.toFixed(1)}:1 (${artboardProps.width}×${artboardProps.height}px). Expected < 3:1 for a dashboard. Likely a layout issue — missing horizontal grid or everything stacked vertically.`,
+              });
+              validationStatus = 'FAIL';
+            } else if (ratio > 2) {
+              validationResults.push({
+                check: 'Layout Sanity',
+                status: 'WARN',
+                detail: `Artboard ratio ${ratio.toFixed(1)}:1 (${artboardProps.width}×${artboardProps.height}px). Slightly tall — verify layout is correct.`,
+              });
+              if (validationStatus !== 'FAIL') validationStatus = 'WARN';
+            } else {
+              validationResults.push({
+                check: 'Layout Sanity',
+                status: 'PASS',
+                detail: `Artboard ratio ${ratio.toFixed(1)}:1 (${artboardProps.width}×${artboardProps.height}px). Normal.`,
+              });
+            }
+          }
+
+          // 2. CONTENT DEDUPLICATION — scan text nodes for repeated strings
+          try {
+            const allChildren = await bridge.send('get_node_children', { nodeId: artboardId, depth: 10 });
+            const textContents = [];
+            const emptyFrames = [];
+            function walkChildren(node) {
+              if (!node) return;
+              if (node.type === 'TEXT' && node.characters && node.characters.length > 10) {
+                textContents.push(node.characters);
+              }
+              // Check for empty frames > 100px
+              if ((node.type === 'FRAME' || node.type === 'GROUP') && node.childrenCount === 0 && (node.width > 100 || node.height > 100)) {
+                emptyFrames.push({ name: node.name || node.id, width: node.width, height: node.height });
+              }
+              if (node.children) {
+                node.children.forEach(walkChildren);
+              }
+            }
+            if (allChildren && allChildren.children) {
+              allChildren.children.forEach(walkChildren);
+            }
+
+            // Find duplicates
+            const contentCounts = {};
+            textContents.forEach(t => { contentCounts[t] = (contentCounts[t] || 0) + 1; });
+            const duplicates = Object.entries(contentCounts).filter(([text, count]) => count > 1 && text.length > 15);
+            if (duplicates.length > 0) {
+              validationResults.push({
+                check: 'Content Deduplication',
+                status: 'WARN',
+                detail: `${duplicates.length} repeated text string(s) found: ${duplicates.map(([t, c]) => `"${t.slice(0, 40)}..." (×${c})`).join(', ')}. May indicate duplicate content from a failed build.`,
+              });
+              if (validationStatus !== 'FAIL') validationStatus = 'WARN';
+            } else {
+              validationResults.push({
+                check: 'Content Deduplication',
+                status: 'PASS',
+                detail: 'No unexpected duplicate text content found.',
+              });
+            }
+
+            // 3. STRUCTURAL VALIDATION — empty frames, frames with no fill where expected
+            if (emptyFrames.length > 0) {
+              validationResults.push({
+                check: 'Empty Frames',
+                status: 'WARN',
+                detail: `${emptyFrames.length} empty frame(s) > 100px found: ${emptyFrames.map(f => `"${f.name}" (${f.width}×${f.height})`).join(', ')}. May be missing content.`,
+              });
+              if (validationStatus !== 'FAIL') validationStatus = 'WARN';
+            } else {
+              validationResults.push({
+                check: 'Empty Frames',
+                status: 'PASS',
+                detail: 'No empty oversized frames found.',
+              });
+            }
+          } catch (e2) { /* deep scan failed — non-fatal */ }
+        }
+      } catch (e) { /* artboard not found — skip validation */ }
+
+      // Add validation section to report
+      const validationHeader = validationStatus === 'FAIL'
+        ? '## ⚠ BUILD NEEDS REVIEW — Structural Validation'
+        : validationStatus === 'WARN'
+          ? '## ⚠ Build Warnings — Structural Validation'
+          : '## ✓ Structural Validation Passed';
+      lines.push(validationHeader);
+      lines.push('');
+      if (validationResults.length > 0) {
+        validationResults.forEach(v => {
+          const icon = v.status === 'PASS' ? '✓' : v.status === 'WARN' ? '⚠' : '✗';
+          lines.push(`- ${icon} **${v.check}**: ${v.detail}`);
+        });
+      } else {
+        lines.push('Validation could not run (no artboard ID available).');
       }
       lines.push('');
 
@@ -390,8 +542,10 @@ function register(server, context) {
         unoverriddenTextCount: unoverriddenCount,
         componentUsagePercent,
         componentQualityGate,
+        validationStatus,
+        validationResults,
         promotions,
-        summary: `Build report for "${screenName}": ${totalInstances} DS component instances, ${primitives.length} primitives, ${componentUsagePercent}% component usage (${componentQualityGate}), ${toolCallCount} tool calls (${cacheHits} cached). ${gapEntries.length} DS gaps identified. ${bindingFailures.length > 0 ? `⚠ ${bindingFailures.length} nodes with binding failures.` : 'All DS bindings succeeded.'}${unoverriddenCount > 0 ? ` ⚠ ${unoverriddenCount} text node(s) not overridden.` : ''}${promotionSummary}`,
+        summary: `Build report for "${screenName}": ${totalInstances} DS component instances, ${primitives.length} primitives, ${componentUsagePercent}% component usage (${componentQualityGate}), ${toolCallCount} tool calls (${cacheHits} cached). ${gapEntries.length} DS gaps identified. ${bindingFailures.length > 0 ? `⚠ ${bindingFailures.length} nodes with binding failures.` : 'All DS bindings succeeded.'}${unoverriddenCount > 0 ? ` ⚠ ${unoverriddenCount} text node(s) not overridden.` : ''} Structural validation: ${validationStatus}.${promotionSummary}`,
       };
     }
   );

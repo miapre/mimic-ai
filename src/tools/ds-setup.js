@@ -215,6 +215,88 @@ function register(server, context) {
     }
   );
 
+  // ── figma_preload_fill_styles ─────────────────────────────────
+  registerTool(
+    'figma_preload_fill_styles',
+    'Preloads fill (color) styles into the DS cache from a library file key. Call when discovery missed fill styles (e.g. library variables not enumerable but fill styles exist in the REST API).',
+    {
+      type: 'object',
+      properties: {
+        libraryFileKey: { type: 'string', description: 'Library file key to fetch fill styles from.' },
+      },
+      required: ['libraryFileKey'],
+    },
+    async (args) => {
+      const figmaRest = context.figmaRest;
+      if (!figmaRest) {
+        return { error: 'FIGMA_TOKEN_REQUIRED', message: 'FIGMA_TOKEN not configured.' };
+      }
+      let fillCount = 0;
+      let effectCount = 0;
+      const fillKeys = [];
+      try {
+        const allStyles = await figmaRest.getAllStyles(args.libraryFileKey);
+        for (const s of allStyles.fillStyles) {
+          dsCache.addFillStyle(s.key, { name: s.name, description: s.description, source: 'rest_api' });
+          fillKeys.push(s.key);
+          fillCount++;
+        }
+        for (const s of allStyles.effectStyles) {
+          dsCache.addEffectStyle(s.key, { name: s.name, description: s.description, source: 'rest_api' });
+          effectCount++;
+        }
+      } catch (e) {
+        return { error: 'FETCH_FAILED', message: e.message || 'Failed to fetch styles.' };
+      }
+
+      // Pre-import fill styles into the Figma plugin's styleCache
+      // This prevents timeout on first use during builds
+      let pluginPreloaded = 0;
+      if (fillKeys.length > 0) {
+        try {
+          const preloadResult = await bridge.send('preload_fill_styles', { styleKeys: fillKeys });
+          pluginPreloaded = preloadResult?.preloadedFillStyles || 0;
+        } catch (e) { /* non-fatal — styles will be imported on first use */ }
+      }
+
+      session.toolCallCount++;
+      const enforcement = dsCache.getEnforcementProfile();
+      return {
+        fillStylesCached: fillCount,
+        effectStylesCached: effectCount,
+        pluginPreloaded,
+        enforcement,
+        hint: `${fillCount} fill styles + ${effectCount} effect styles cached. ${pluginPreloaded} pre-imported in plugin. Use fillStyleId in create_frame, create_text, create_rectangle, or set_node_fill. Call figma_list_fill_styles to browse them.`,
+      };
+    }
+  );
+
+  // ── figma_list_fill_styles ────────────────────────────────────
+  registerTool(
+    'figma_list_fill_styles',
+    'Returns all cached fill (color) styles from the DS. Use the style key as fillStyleId in create_frame, create_text, create_rectangle, create_ellipse, or set_node_fill.',
+    { type: 'object', properties: {
+      filter: { type: 'string', description: 'Optional keyword filter (e.g. "Blue", "Gray", "Red").' },
+    }, required: [] },
+    async (args) => {
+      const styles = [];
+      const filter = args.filter ? args.filter.toLowerCase() : null;
+      for (const [key, style] of dsCache.fillStyles) {
+        if (filter && !(style.name || '').toLowerCase().includes(filter)) continue;
+        styles.push({ key, ...style });
+      }
+      session.toolCallCount++;
+      return {
+        count: styles.length,
+        totalCached: dsCache.fillStyles.size,
+        styles,
+        hint: styles.length === 0
+          ? 'No fill styles cached. Run discovery with a library file key to fetch fill styles.'
+          : 'Use the style key as fillStyleId in create_frame, create_text, create_rectangle, or set_node_fill.',
+      };
+    }
+  );
+
   // ── figma_discover_library_styles ─────────────────────────────
   registerTool(
     'figma_discover_library_styles',

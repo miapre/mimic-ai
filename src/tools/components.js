@@ -133,23 +133,30 @@ function register(server, context) {
 
       const nodeId = result?.nodeId || result?.id;
 
-      // Auto-set FILL width when inserted into an auto-layout parent that
-      // has a deterministic width (FIXED or FILL). Skip when the parent is
-      // HUG — FILL children in a HUG parent create a layout conflict
-      // (buttons collapse, components stretch to 0).
+      // Auto-set FILL width when inserted into a VERTICAL auto-layout parent
+      // that has a deterministic width (FIXED or FILL). Skip when:
+      // - Parent is HUG — FILL children in HUG create layout conflicts
+      // - Parent is HORIZONTAL — FILL would stretch the component across the
+      //   row (e.g., a sidebar taking the full artboard width). In HORIZONTAL
+      //   parents, components keep their natural width; the caller sets FILL
+      //   explicitly on the element that should expand (e.g., main content).
       if (nodeId && args.parentId) {
         try {
           const parentProps = await bridge.send('get_node_props', { nodeId: args.parentId });
           const parentSizing = parentProps?.layoutSizingHorizontal;
+          const parentDirection = parentProps?.layoutMode;
           const parentHasWidth = parentSizing === 'FIXED' || parentSizing === 'FILL';
-          if (parentHasWidth) {
+          const parentIsVertical = parentDirection === 'VERTICAL';
+          if (parentHasWidth && parentIsVertical) {
             await bridge.send('set_layout_sizing', {
               nodeId,
               layoutSizingHorizontal: 'FILL',
             });
             result._autoSized = { layoutSizingHorizontal: 'FILL' };
           } else {
-            result._autoSized = { skipped: true, reason: `parent is ${parentSizing || 'HUG'} — FILL would cause layout conflict` };
+            result._autoSized = { skipped: true, reason: parentIsVertical
+              ? `parent is ${parentSizing || 'HUG'} — FILL would cause layout conflict`
+              : `parent is HORIZONTAL — components keep natural width` };
           }
         } catch (_) {
           // Non-critical — parent may not be auto-layout

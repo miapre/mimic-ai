@@ -1,6 +1,8 @@
 class DsCache {
   constructor() {
     this.textStyles = new Map();
+    this.fillStyles = new Map();
+    this.effectStyles = new Map();
     this.variables = new Map();
     this.components = new Map();
     this.failedKeys = new Set();
@@ -9,6 +11,10 @@ class DsCache {
 
   addTextStyle(key, style) { this.textStyles.set(key, style); }
   getTextStyle(key) { return this.textStyles.get(key) || null; }
+  addFillStyle(key, style) { this.fillStyles.set(key, style); }
+  getFillStyle(key) { return this.fillStyles.get(key) || null; }
+  addEffectStyle(key, style) { this.effectStyles.set(key, style); }
+  getEffectStyle(key) { return this.effectStyles.get(key) || null; }
   addVariable(path, variable) { this.variables.set(path, variable); }
   getVariable(path) { return this.variables.get(path) || null; }
   addComponent(key, component) { this.components.set(key, component); }
@@ -95,12 +101,14 @@ class DsCache {
     const spacingVars = [...this.variables.values()].filter(v => v.category === 'spacing');
     const radiusVars = [...this.variables.values()].filter(v => v.category === 'radius');
 
+    const hasFillStyles = this.fillStyles.size > 0;
     return {
       enforceTextStyles: hasTextStyles || hasTypographyVars,
+      enforceFillStyles: hasFillStyles,
       enforceColorVars: colorVars.length > 0,
       enforceSpacingVars: spacingVars.length > 0,
       enforceRadiusVars: radiusVars.length > 0,
-      counts: { textStyles: this.textStyles.size, colorVars: colorVars.length, spacingVars: spacingVars.length, radiusVars: radiusVars.length }
+      counts: { textStyles: this.textStyles.size, fillStyles: this.fillStyles.size, effectStyles: this.effectStyles.size, colorVars: colorVars.length, spacingVars: spacingVars.length, radiusVars: radiusVars.length }
     };
   }
 
@@ -146,6 +154,25 @@ class DsCache {
   }
 
   /**
+   * Find a fill style by keyword. DS-agnostic lookup.
+   * @param {string} keyword - Part of the style name (e.g. 'Blue-500', 'Gray-100', 'White')
+   * @returns {string|null} Fill style key (for fillStyleId)
+   */
+  findFillStyle(keyword) {
+    if (!keyword || this.fillStyles.size === 0) return null;
+    const needle = keyword.toLowerCase();
+    // Exact match first
+    for (const [key, style] of this.fillStyles) {
+      if ((style.name || '').toLowerCase() === needle) return key;
+    }
+    // Partial match
+    for (const [key, style] of this.fillStyles) {
+      if ((style.name || '').toLowerCase().includes(needle)) return key;
+    }
+    return null;
+  }
+
+  /**
    * Find a palette of distinct DS color variables for chart data.
    * Looks for utility/component colors, excludes text/bg/border semantic colors.
    * @param {number} [count=8] - Number of colors to return
@@ -174,6 +201,8 @@ class DsCache {
 
   clear() {
     this.textStyles.clear();
+    this.fillStyles.clear();
+    this.effectStyles.clear();
     this.variables.clear();
     this.components.clear();
     this.failedKeys.clear();
