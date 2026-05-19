@@ -18,6 +18,7 @@ function register(server, context) {
         name: { type: 'string', description: 'Instance name override.' },
         parentId: { type: 'string', description: 'Parent node ID to insert into.' },
         importMode: { type: 'string', enum: ['component', 'componentSet'], description: 'Optional import hint. Usually inferred from DS discovery cache.' },
+        applyRecipe: { type: 'boolean', description: 'Set to false to skip auto-applying confirmed recipe defaults. Defaults to true.' },
       },
       required: ['componentKey', 'parentId'],
     },
@@ -128,17 +129,37 @@ function register(server, context) {
         session._componentInsertions.set(args.componentKey, existing);
       }
 
-      // Check knowledge store for recipes
+      const nodeId = result?.nodeId || result?.id;
+
       // Check knowledge store for recipes — look up by componentKey first, then by name
       const recipe = knowledgeStore.getComponent(args.componentKey) || knowledgeStore.getComponent(args.name || result?.name);
       const hints = [];
+      const autoApplied = {};
+
       if (recipe) {
         hints.push(`Known recipe: ${JSON.stringify(recipe)}`);
         session.cacheHits++;
+
+        // Auto-apply confirmed/verified recipes unless explicitly opted out
+        const isReplayable = (recipe.confidence === 'confirmed' || recipe.confidence === 'verified')
+          && recipe.defaultVariants
+          && Object.keys(recipe.defaultVariants).length > 0
+          && args.applyRecipe !== false;
+
+        if (isReplayable && nodeId) {
+          try {
+            await bridge.send('set_variant', {
+              nodeId,
+              properties: recipe.defaultVariants,
+            });
+            autoApplied.variants = recipe.defaultVariants;
+            hints.push(`Auto-applied variant config from ${recipe.confidence} recipe: ${JSON.stringify(recipe.defaultVariants)}. Override with figma_set_variant if this instance needs different values.`);
+          } catch (_) {
+            hints.push('Recipe variant auto-apply failed — set variants manually.');
+          }
+        }
       }
       hints.push('After inserting: override ALL text with figma_set_component_text, set semantic properties, configure icons, hide unused slots.');
-
-      const nodeId = result?.nodeId || result?.id;
 
       // Track nodeId → componentKey for variant config capture
       if (!session._nodeComponentKeys) session._nodeComponentKeys = new Map();
@@ -260,6 +281,7 @@ function register(server, context) {
         nodeId,
         ...result,
         configurationChecklist: checklist.length > 0 ? checklist : undefined,
+        _autoApplied: Object.keys(autoApplied).length > 0 ? autoApplied : undefined,
         hints,
       };
     }

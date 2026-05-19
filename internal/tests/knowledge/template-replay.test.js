@@ -209,3 +209,114 @@ describe('Template Replay — recipe persistence', () => {
     assert.deepStrictEqual(recipe.defaultVariants, { Size: 'sm', Hierarchy: 'Primary' });
   });
 });
+
+describe('Template Replay — auto-apply on insert', () => {
+  let handlers, bridge, session, knowledgeStore, dsCache;
+
+  beforeEach(() => {
+    const ctx = createTestContext();
+    handlers = ctx.handlers;
+    bridge = ctx.bridge;
+    session = ctx.session;
+    knowledgeStore = ctx.knowledgeStore;
+    dsCache = ctx.dsCache;
+    try { fs.unlinkSync(REPLAY_STORE_PATH); } catch {}
+  });
+
+  it('auto-applies defaultVariants from confirmed recipe on insert', async () => {
+    knowledgeStore.setComponent('btn-key-456', {
+      names: ['Button'],
+      componentKey: 'btn-key-456',
+      buildCount: 4,
+      confidence: 'confirmed',
+      defaultVariants: { Size: 'sm', Hierarchy: 'Primary' },
+    });
+
+    bridge.setResponse('insert_component', {
+      nodeId: 'node:99',
+      name: 'Button',
+      componentKey: 'btn-key-456',
+      type: 'INSTANCE',
+    });
+    bridge.setResponse('get_node_props', {
+      layoutSizingHorizontal: 'FIXED',
+      layoutMode: 'HORIZONTAL',
+    });
+
+    const result = await handlers.figma_insert_component({
+      componentKey: 'btn-key-456',
+      parentId: 'parent:1',
+    });
+
+    const variantMsgs = bridge.getMessages('set_variant');
+    assert.strictEqual(variantMsgs.length, 1);
+    assert.strictEqual(variantMsgs[0].payload.nodeId, 'node:99');
+    assert.deepStrictEqual(variantMsgs[0].payload.properties, {
+      Size: 'sm', Hierarchy: 'Primary',
+    });
+
+    assert.ok(result._autoApplied);
+    assert.deepStrictEqual(result._autoApplied.variants, {
+      Size: 'sm', Hierarchy: 'Primary',
+    });
+  });
+
+  it('does NOT auto-apply variants for new (unconfirmed) recipes', async () => {
+    knowledgeStore.setComponent('btn-key-789', {
+      names: ['Button'],
+      componentKey: 'btn-key-789',
+      buildCount: 1,
+      confidence: 'new',
+      defaultVariants: { Size: 'lg' },
+    });
+
+    bridge.setResponse('insert_component', {
+      nodeId: 'node:100',
+      name: 'Button',
+      componentKey: 'btn-key-789',
+      type: 'INSTANCE',
+    });
+    bridge.setResponse('get_node_props', {
+      layoutSizingHorizontal: 'FIXED',
+      layoutMode: 'HORIZONTAL',
+    });
+
+    await handlers.figma_insert_component({
+      componentKey: 'btn-key-789',
+      parentId: 'parent:1',
+    });
+
+    const variantMsgs = bridge.getMessages('set_variant');
+    assert.strictEqual(variantMsgs.length, 0);
+  });
+
+  it('allows variant override when applyRecipe is false', async () => {
+    knowledgeStore.setComponent('btn-key-override', {
+      names: ['Button'],
+      componentKey: 'btn-key-override',
+      buildCount: 5,
+      confidence: 'confirmed',
+      defaultVariants: { Size: 'sm' },
+    });
+
+    bridge.setResponse('insert_component', {
+      nodeId: 'node:101',
+      name: 'Button',
+      componentKey: 'btn-key-override',
+      type: 'INSTANCE',
+    });
+    bridge.setResponse('get_node_props', {
+      layoutSizingHorizontal: 'FIXED',
+      layoutMode: 'HORIZONTAL',
+    });
+
+    await handlers.figma_insert_component({
+      componentKey: 'btn-key-override',
+      parentId: 'parent:1',
+      applyRecipe: false,
+    });
+
+    const variantMsgs = bridge.getMessages('set_variant');
+    assert.strictEqual(variantMsgs.length, 0);
+  });
+});
