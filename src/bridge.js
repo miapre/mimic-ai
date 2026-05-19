@@ -2,6 +2,7 @@
 
 const http = require('node:http');
 const crypto = require('node:crypto');
+const { execSync } = require('node:child_process');
 const { WebSocketServer } = require('ws');
 
 class Bridge {
@@ -51,6 +52,18 @@ class Bridge {
    * @returns {Promise<void>}
    */
   start() {
+    // Kill any zombie process on the port before binding
+    try {
+      const pids = execSync(`lsof -ti :${this.port} 2>/dev/null`, { encoding: 'utf8' }).trim();
+      if (pids) {
+        for (const pid of pids.split('\n')) {
+          try { process.kill(Number(pid), 'SIGKILL'); } catch (_) {}
+        }
+        // Brief wait for port release
+        execSync('sleep 0.3');
+      }
+    } catch (_) { /* no process on port — normal */ }
+
     return new Promise((resolve, reject) => {
       this.server = http.createServer((req, res) => {
         this._handleHttp(req, res);
