@@ -320,3 +320,79 @@ describe('Template Replay — auto-apply on insert', () => {
     assert.strictEqual(variantMsgs.length, 0);
   });
 });
+
+describe('Template Replay — savings tracking', () => {
+  let handlers, bridge, session, knowledgeStore;
+
+  beforeEach(() => {
+    const ctx = createTestContext();
+    handlers = ctx.handlers;
+    bridge = ctx.bridge;
+    session = ctx.session;
+    knowledgeStore = ctx.knowledgeStore;
+    try { fs.unlinkSync(REPLAY_STORE_PATH); } catch {}
+  });
+
+  it('tracks replaySavings in session and includes in build report', async () => {
+    knowledgeStore.setComponent('btn-key-sav', {
+      names: ['Button'],
+      componentKey: 'btn-key-sav',
+      buildCount: 4,
+      confidence: 'confirmed',
+      defaultVariants: { Size: 'sm' },
+    });
+
+    bridge.setResponse('insert_component', {
+      nodeId: 'node:200',
+      name: 'Button',
+      componentKey: 'btn-key-sav',
+      type: 'INSTANCE',
+    });
+    bridge.setResponse('get_node_props', {
+      layoutSizingHorizontal: 'FIXED',
+      layoutMode: 'HORIZONTAL',
+    });
+
+    await handlers.figma_insert_component({
+      componentKey: 'btn-key-sav',
+      parentId: 'parent:1',
+    });
+
+    assert.strictEqual(session.replaySavings, 1);
+
+    // Generate report
+    session._componentInsertions = new Map([
+      ['btn-key-sav', { count: 1, names: ['Button'] }],
+    ]);
+    session.phaseToolCalls[3] = 5;
+
+    const report = await handlers.mimic_generate_build_report({
+      screenName: 'Savings Test',
+      components: [{ name: 'Button', instances: 1, componentKey: 'btn-key-sav' }],
+      primitives: [],
+      toolCallCount: 10,
+      cacheHits: 1,
+    });
+
+    assert.ok(report.summary.includes('1 replayed'));
+  });
+});
+
+describe('Template Replay — build history', () => {
+  it('records replaySavings in build history', () => {
+    const store = new KnowledgeStore(REPLAY_STORE_PATH);
+    store.recordBuild({
+      screenName: 'Dashboard',
+      toolCalls: 50,
+      cacheHits: 5,
+      replaySavings: 3,
+      componentCount: 8,
+      primitiveCount: 2,
+      bindingFailures: 0,
+      componentUsagePercent: 80,
+    });
+    const history = store.getBuildHistory();
+    assert.strictEqual(history[0].replaySavings, 3);
+    try { fs.unlinkSync(REPLAY_STORE_PATH); } catch {}
+  });
+});

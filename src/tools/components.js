@@ -153,6 +153,8 @@ function register(server, context) {
               properties: recipe.defaultVariants,
             });
             autoApplied.variants = recipe.defaultVariants;
+            // Track replay savings — each auto-apply saves 1 figma_set_variant call
+            session.replaySavings = (session.replaySavings || 0) + 1;
             hints.push(`Auto-applied variant config from ${recipe.confidence} recipe: ${JSON.stringify(recipe.defaultVariants)}. Override with figma_set_variant if this instance needs different values.`);
           } catch (_) {
             hints.push('Recipe variant auto-apply failed — set variants manually.');

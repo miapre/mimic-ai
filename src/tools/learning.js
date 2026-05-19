@@ -316,6 +316,7 @@ function register(server, context) {
         screenName,
         toolCalls: toolCallCount,
         cacheHits,
+        replaySavings: session.replaySavings || 0,
         componentCount: totalInstances,
         primitiveCount: primitives.length,
         bindingFailures: bindingFailures.length,
@@ -380,7 +381,9 @@ function register(server, context) {
         lines.push('');
       }
 
-      lines.push(`## Efficiency: ${toolCallCount} tool calls (${cacheHits} from cache)`);
+      const replaySavings = session.replaySavings || 0;
+      const replayNote = replaySavings > 0 ? `, ${replaySavings} replayed` : '';
+      lines.push(`## Efficiency: ${toolCallCount} tool calls (${cacheHits} from cache${replayNote})`);
       lines.push('');
 
       lines.push('## DS Gap Recommendations');
@@ -416,10 +419,10 @@ function register(server, context) {
       if (history.length >= 2) {
         lines.push('## Learning Trend');
         lines.push('');
-        lines.push('| Build | Screen | Tool Calls | Cache Hits | Components | Primitives | DS Usage |');
-        lines.push('|-------|--------|-----------|------------|------------|------------|----------|');
+        lines.push('| Build | Screen | Tool Calls | Cache Hits | Replayed | Components | Primitives | DS Usage |');
+        lines.push('|-------|--------|-----------|------------|----------|------------|------------|----------|');
         for (const h of history) {
-          lines.push(`| #${h.buildNumber} | ${h.screenName} | ${h.toolCalls} | ${h.cacheHits} | ${h.componentCount} | ${h.primitiveCount} | ${h.componentUsagePercent}% |`);
+          lines.push(`| #${h.buildNumber} | ${h.screenName} | ${h.toolCalls} | ${h.cacheHits} | ${h.replaySavings || 0} | ${h.componentCount} | ${h.primitiveCount} | ${h.componentUsagePercent}% |`);
         }
         lines.push('');
         const first = history[0];
@@ -594,7 +597,7 @@ function register(server, context) {
         validationStatus,
         validationResults,
         promotions,
-        summary: `Build report for "${screenName}": ${totalInstances} DS component instances, ${primitives.length} primitives, ${componentUsagePercent}% component usage (${componentQualityGate}), ${toolCallCount} tool calls (${cacheHits} cached). ${gapEntries.length} DS gaps identified. ${bindingFailures.length > 0 ? `⚠ ${bindingFailures.length} nodes with binding failures.` : 'All DS bindings succeeded.'}${unoverriddenCount > 0 ? ` ⚠ ${unoverriddenCount} text node(s) not overridden.` : ''} Structural validation: ${validationStatus}.${promotionSummary}`,
+        summary: `Build report for "${screenName}": ${totalInstances} DS component instances, ${primitives.length} primitives, ${componentUsagePercent}% component usage (${componentQualityGate}), ${toolCallCount} tool calls (${cacheHits} cached${replaySavings > 0 ? `, ${replaySavings} replayed` : ''}). ${gapEntries.length} DS gaps identified. ${bindingFailures.length > 0 ? `⚠ ${bindingFailures.length} nodes with binding failures.` : 'All DS bindings succeeded.'}${unoverriddenCount > 0 ? ` ⚠ ${unoverriddenCount} text node(s) not overridden.` : ''} Structural validation: ${validationStatus}.${promotionSummary}`,
       };
     }
   );
