@@ -17,7 +17,7 @@ class Bridge {
     this.port = opts.port ?? 3056;
     this.keepaliveInterval = opts.keepaliveInterval ?? 15000;
     this.maxReconnectAttempts = opts.maxReconnectAttempts ?? 3;
-    this.defaultTimeout = opts.defaultTimeout ?? 60000;
+    this.defaultTimeout = opts.defaultTimeout ?? 120000;
 
     this.connected = false;
     this.ws = null;
