@@ -115,6 +115,10 @@ function register(server, context) {
       required: ['fileKey'],
     },
     async (args) => {
+      // Block new discovery if a previous build has no report
+      if (context.requireReportIfPending) {
+        context.requireReportIfPending();
+      }
       const discovery = new DsDiscovery(bridge, dsCache, knowledgeStore);
 
       // ── Token gate ──

@@ -89,11 +89,19 @@ function requirePhase(minPhase, hint) {
   if (session.phase < minPhase) {
     throw new PhaseError(session.phase, minPhase, hint);
   }
-  // Enforce report before next build: if builds happened since last report, block new build tools
-  if (session.buildsSinceReport > 0 && minPhase >= 2) {
+}
+
+/**
+ * Enforce report before starting a new build session.
+ * Call this only from session-starting tools (discover_ds), not from
+ * individual build operations (create_frame, create_text, etc.).
+ */
+function requireReportIfPending() {
+  if (session.buildsSinceReport > 0) {
     const err = new Error(
-      `REPORT_REQUIRED: ${session.buildsSinceReport} build operation(s) completed without a report. ` +
-      `Call mimic_generate_build_report before continuing. The build report is mandatory after every build — ` +
+      `REPORT_REQUIRED: A build completed without a report. ` +
+      `Call mimic_generate_build_report before starting a new build. ` +
+      `The build report is mandatory after every build — ` +
       `it teaches users about DS usage, gaps, and efficiency.`
     );
     err.code = 'REPORT_REQUIRED';
@@ -102,8 +110,9 @@ function requirePhase(minPhase, hint) {
 }
 
 function advancePhase(to) {
-  if (to >= 3 && session.phase < 3) {
-    session.buildsSinceReport++;
+  // Mark that a build happened (for report enforcement on next discovery)
+  if (to >= 3 && session.buildsSinceReport === 0) {
+    session.buildsSinceReport = 1;
   }
   session.phase = Math.max(session.phase, to);
 }
@@ -179,6 +188,7 @@ const context = {
   buildManifest,
   session,
   requirePhase,
+  requireReportIfPending,
   advancePhase,
   resetSession,
   registerTool,
