@@ -534,6 +534,16 @@ function register(server, context) {
         discovery.setLibrary(session.selectedLibraryKey);
       }
 
+      // ── Auto-reset when switching files ──
+      // If the fileKey changed since last discovery, clear all cached DS data
+      // so the new file gets a fresh discovery. Without this, stale styles/components
+      // from the previous file bleed into the new one.
+      if (session.discoveryFileKey && session.discoveryFileKey !== args.fileKey) {
+        resetSession();
+        dsCache.clear();
+        try { await bridge.send('clear_style_cache'); } catch (_) {}
+      }
+
       // Verify plugin connection
       const libraryInfo = await discovery.enumerateLibrary();
 
