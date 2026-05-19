@@ -529,8 +529,9 @@ function register(server, context) {
       if (!fs.existsSync(buildsDir)) fs.mkdirSync(buildsDir, { recursive: true });
       buildManifest.save(path.join(buildsDir, 'last-build.json'));
 
-      // Advance phase to 5 (report)
+      // Advance phase to 5 (report) and clear report enforcement
       advancePhase(5);
+      session.buildsSinceReport = 0;
 
       const promotionSummary = promotions.length > 0
         ? ` ${promotions.length} component(s) auto-promoted to strong: ${promotions.join(', ')}.`

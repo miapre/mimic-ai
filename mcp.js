@@ -75,6 +75,8 @@ const session = {
   pendingVariableMismatchConfirmation: false,
   variableMismatchSourceLibs: null,
   variableSourceConfirmed: null,
+  // Report enforcement — blocks new builds until report is generated
+  buildsSinceReport: 0,
 };
 
 // Circuit breaker constants
@@ -87,9 +89,22 @@ function requirePhase(minPhase, hint) {
   if (session.phase < minPhase) {
     throw new PhaseError(session.phase, minPhase, hint);
   }
+  // Enforce report before next build: if builds happened since last report, block new build tools
+  if (session.buildsSinceReport > 0 && minPhase >= 2) {
+    const err = new Error(
+      `REPORT_REQUIRED: ${session.buildsSinceReport} build operation(s) completed without a report. ` +
+      `Call mimic_generate_build_report before continuing. The build report is mandatory after every build — ` +
+      `it teaches users about DS usage, gaps, and efficiency.`
+    );
+    err.code = 'REPORT_REQUIRED';
+    throw err;
+  }
 }
 
 function advancePhase(to) {
+  if (to >= 3 && session.phase < 3) {
+    session.buildsSinceReport++;
+  }
   session.phase = Math.max(session.phase, to);
 }
 
@@ -104,6 +119,7 @@ function resetSession() {
   session.checkpointIssued = false;
   session.bindingFailures = [];
   session.componentTextTracker = new Map();
+  session.buildsSinceReport = 0;
   // Community library check state
   session.pendingCommunityCheck = false;
   session.discoveryFileKey = null;
