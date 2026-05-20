@@ -224,6 +224,67 @@ describe('MCP Tool Integration', () => {
         (err) => err.error === 'PHASE_REQUIRED'
       );
     });
+
+    it('resolves text style name to key before sending to bridge', async () => {
+      session.phase = 3;
+      // Add a text style with a known key
+      dsCache.addTextStyle('abc123def456', { name: 'Text sm/Semibold', description: '' });
+
+      await handlers.figma_create_text({
+        content: 'Hello',
+        parentId: 'p:1',
+        textStyleId: 'Text sm/Semibold',
+      });
+
+      const msgs = bridge.getMessages('create_text');
+      assert.strictEqual(msgs[msgs.length - 1].payload.textStyleId, 'abc123def456',
+        'style name should be resolved to the key before sending to bridge');
+    });
+
+    it('resolves text style name case-insensitively', async () => {
+      session.phase = 3;
+      dsCache.addTextStyle('key789', { name: 'Display xl/Bold', description: '' });
+
+      await handlers.figma_create_text({
+        content: 'Title',
+        parentId: 'p:1',
+        textStyleId: 'display xl/bold',
+      });
+
+      const msgs = bridge.getMessages('create_text');
+      assert.strictEqual(msgs[msgs.length - 1].payload.textStyleId, 'key789');
+    });
+
+    it('passes through raw style keys unchanged', async () => {
+      session.phase = 3;
+      dsCache.addTextStyle('raw-key-pass', { name: 'Text xs/Regular', description: '' });
+
+      await handlers.figma_create_text({
+        content: 'Small',
+        parentId: 'p:1',
+        textStyleId: 'raw-key-pass',
+      });
+
+      const msgs = bridge.getMessages('create_text');
+      assert.strictEqual(msgs[msgs.length - 1].payload.textStyleId, 'raw-key-pass');
+    });
+
+    it('passes unresolved style keys through to bridge (plugin may have them)', async () => {
+      session.phase = 3;
+      dsCache.addTextStyle('some-key', { name: 'Text sm/Regular', description: '' });
+
+      const result = await handlers.figma_create_text({
+        content: 'Test',
+        parentId: 'p:1',
+        textStyleId: 'unknown-plugin-key',
+      });
+
+      // Should reach the bridge, not error early
+      assert.ok(result.nodeId, 'should create the text node');
+      const msgs = bridge.getMessages('create_text');
+      assert.strictEqual(msgs[msgs.length - 1].payload.textStyleId, 'unknown-plugin-key',
+        'unresolved key should pass through to bridge unchanged');
+    });
   });
 
   // ── 5. figma_insert_component ─────────────────────────────────

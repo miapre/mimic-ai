@@ -11,6 +11,22 @@ class DsCache {
 
   addTextStyle(key, style) { this.textStyles.set(key, style); }
   getTextStyle(key) { return this.textStyles.get(key) || null; }
+
+  /**
+   * Resolve a text style name (e.g. "Text sm/Semibold") to its Figma style key.
+   * Returns the key if found, or null if no match.
+   */
+  resolveTextStyleKey(nameOrKey) {
+    if (!nameOrKey) return null;
+    // Already a key — check if it exists directly
+    if (this.textStyles.has(nameOrKey)) return nameOrKey;
+    // Search by name (case-insensitive)
+    const lower = nameOrKey.toLowerCase();
+    for (const [key, style] of this.textStyles) {
+      if (style.name && style.name.toLowerCase() === lower) return key;
+    }
+    return null;
+  }
   addFillStyle(key, style) { this.fillStyles.set(key, style); }
   getFillStyle(key) { return this.fillStyles.get(key) || null; }
   addEffectStyle(key, style) { this.effectStyles.set(key, style); }

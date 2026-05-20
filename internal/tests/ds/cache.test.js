@@ -39,4 +39,36 @@ describe('DsCache', () => {
     cache.clear();
     assert.equal(cache.getTextStyle('abc'), null);
   });
+
+  // ── resolveTextStyleKey ────────────────────────────────────────
+
+  it('resolves style name to key', () => {
+    const cache = new DsCache();
+    cache.addTextStyle('key123', { name: 'Text sm/Semibold' });
+    assert.equal(cache.resolveTextStyleKey('Text sm/Semibold'), 'key123');
+  });
+
+  it('resolves style name case-insensitively', () => {
+    const cache = new DsCache();
+    cache.addTextStyle('key456', { name: 'Display xl/Bold' });
+    assert.equal(cache.resolveTextStyleKey('display xl/bold'), 'key456');
+  });
+
+  it('passes through existing keys', () => {
+    const cache = new DsCache();
+    cache.addTextStyle('direct-key', { name: 'Text xs/Regular' });
+    assert.equal(cache.resolveTextStyleKey('direct-key'), 'direct-key');
+  });
+
+  it('returns null for unknown names', () => {
+    const cache = new DsCache();
+    cache.addTextStyle('key789', { name: 'Text md/Medium' });
+    assert.equal(cache.resolveTextStyleKey('Nonexistent Style'), null);
+  });
+
+  it('returns null for null/undefined input', () => {
+    const cache = new DsCache();
+    assert.equal(cache.resolveTextStyleKey(null), null);
+    assert.equal(cache.resolveTextStyleKey(undefined), null);
+  });
 });

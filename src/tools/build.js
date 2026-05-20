@@ -298,7 +298,7 @@ function register(server, context) {
         name: { type: 'string', description: 'Semantic name describing the HTML element role (e.g., "Page Title", "Card: Revenue Label", "Subtitle"). Never use generic names like "Text".' },
         parentId: { type: 'string', description: 'Parent node ID.' },
         content: { type: 'string', description: 'Text content.' },
-        textStyleId: { type: 'string', description: 'DS text style key to apply.' },
+        textStyleId: { type: 'string', description: 'DS text style — accepts style name (e.g. "Text sm/Semibold") or style key. Names are resolved to keys automatically.' },
         fillStyleId: { type: 'string', description: 'DS fill style key for text color (from figma_list_fill_styles). Preferred over fillVariable when DS has fill styles but no variables.' },
         fillVariable: { type: 'string', description: 'DS variable path for text color.' },
         fontSizeVariable: { type: 'string', description: 'DS variable path for font size (if no text style).' },
@@ -312,6 +312,15 @@ function register(server, context) {
     },
     async (args) => {
       requirePhase(2, PHASE_HINT);
+      // Resolve text style name → key (accepts both "Text sm/Semibold" and raw key)
+      if (args.textStyleId) {
+        const resolvedKey = dsCache.resolveTextStyleKey(args.textStyleId);
+        if (resolvedKey) {
+          args.textStyleId = resolvedKey;
+        }
+        // If not resolved but cache has styles, it's likely a wrong name — warn but let plugin try
+        // (the plugin may have it in its own styleCache from a previous preload)
+      }
       // Validate variable paths before sending to plugin
       const validation = dsCache.validateVariables(args);
       if (!validation.valid) {
