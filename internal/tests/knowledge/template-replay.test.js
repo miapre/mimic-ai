@@ -953,3 +953,98 @@ describe('Template Replay — end-to-end flow', () => {
     assert.strictEqual(session.cacheHits, 1);
   });
 });
+
+describe('Gap Tracking — noise filtering', () => {
+  let handlers, session, knowledgeStore;
+
+  beforeEach(() => {
+    const ctx = createTestContext();
+    handlers = ctx.handlers;
+    session = ctx.session;
+    knowledgeStore = ctx.knowledgeStore;
+    try { fs.unlinkSync(REPLAY_STORE_PATH); } catch {}
+  });
+
+  it('filters out generic container names from gaps', async () => {
+    session.phaseToolCalls[3] = 5;
+
+    await handlers.mimic_generate_build_report({
+      screenName: 'Gap Filter Test',
+      components: [],
+      primitives: [
+        { element: 'Content Container', reason: 'Custom frame created during build' },
+        { element: 'Actions Row', reason: 'Custom frame created during build' },
+        { element: 'Wrapper Section', reason: 'Custom frame created during build' },
+        { element: 'Grid Layout', reason: 'Custom frame created during build' },
+      ],
+      toolCallCount: 10,
+      cacheHits: 0,
+    });
+
+    const gaps = knowledgeStore.getGaps();
+    assert.strictEqual(Object.keys(gaps).length, 0,
+      'generic containers with generic reasons should not become gaps');
+  });
+
+  it('filters out artboard-like names from gaps', async () => {
+    session.phaseToolCalls[3] = 5;
+
+    await handlers.mimic_generate_build_report({
+      screenName: 'Artboard Filter Test',
+      components: [],
+      primitives: [
+        { element: 'Build 1 — Dashboard', reason: 'Custom frame created during build' },
+        { element: 'Test Artboard', reason: 'Custom frame created during build' },
+        { element: 'Replay Build 2', reason: 'Custom frame created during build' },
+        { element: 'LV Build 3', reason: 'Custom frame created during build' },
+      ],
+      toolCallCount: 10,
+      cacheHits: 0,
+    });
+
+    const gaps = knowledgeStore.getGaps();
+    assert.strictEqual(Object.keys(gaps).length, 0,
+      'artboard-like names with generic reasons should not become gaps');
+  });
+
+  it('keeps gaps with specific reasons or search terms', async () => {
+    session.phaseToolCalls[3] = 5;
+
+    await handlers.mimic_generate_build_report({
+      screenName: 'Real Gap Test',
+      components: [],
+      primitives: [
+        { element: 'Member Info stack', reason: 'Custom name+email text stack — no DS component for inline member info', searchTerms: ['member info', 'user info'] },
+        { element: 'Metric card', reason: 'Custom metric card — no DS single-stat card component', searchTerms: ['card', 'metric card'] },
+        { element: 'Content Container', reason: 'Custom frame created during build' },
+      ],
+      toolCallCount: 10,
+      cacheHits: 0,
+    });
+
+    const gaps = knowledgeStore.getGaps();
+    const gapNames = Object.keys(gaps);
+    assert.ok(gapNames.includes('Member Info stack'), 'real gap with search terms should be kept');
+    assert.ok(gapNames.includes('Metric card'), 'real gap with specific reason should be kept');
+    assert.ok(!gapNames.includes('Content Container'), 'generic container should be filtered');
+    assert.strictEqual(gapNames.length, 2, 'only real gaps should remain');
+  });
+
+  it('keeps container names when they have search terms', async () => {
+    session.phaseToolCalls[3] = 5;
+
+    await handlers.mimic_generate_build_report({
+      screenName: 'Container With Terms Test',
+      components: [],
+      primitives: [
+        { element: 'Actions Row', reason: 'No action bar component found in DS', searchTerms: ['action bar', 'toolbar'] },
+      ],
+      toolCallCount: 10,
+      cacheHits: 0,
+    });
+
+    const gaps = knowledgeStore.getGaps();
+    assert.ok(Object.keys(gaps).includes('Actions Row'),
+      'container name with search terms should be kept as a real gap');
+  });
+});

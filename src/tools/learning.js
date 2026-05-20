@@ -223,6 +223,18 @@ function register(server, context) {
       }
       for (const prim of primitives) {
         if (prim.reason && prim.reason.length >= 10) {
+          // Skip layout containers and artboard-like names — they are structural
+          // frames, not missing DS components. Only record gaps for elements that
+          // look like they SHOULD be components (have search terms, or the reason
+          // indicates a real gap rather than generic "Custom frame created").
+          const name = (prim.element || '').toLowerCase();
+          const isGenericContainer = /^(content|container|wrapper|row|list|section|actions?|grid|column|group)/i.test(name);
+          const isArtboardName = /^(build|test|replay|lv build|minerva)/i.test(name);
+          const hasSearchTerms = prim.searchTerms && prim.searchTerms.length > 0;
+          const hasSpecificReason = prim.reason && !/^(Custom frame created|Primitive created)/i.test(prim.reason);
+          if (isGenericContainer || isArtboardName) {
+            if (!hasSearchTerms && !hasSpecificReason) continue; // Skip noise
+          }
           knowledgeStore.addGap(prim.element, {
             elements: [prim.element],
             evidence: `${prim.reason}. Screen: ${screenName}`,
