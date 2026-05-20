@@ -1,4 +1,7 @@
 internal/
+research/
+docs/
+.claude/
 *.log
 .DS_Store
 ds-knowledge.json
