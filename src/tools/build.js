@@ -181,8 +181,65 @@ async function resolvePageLevelPlacement(bridge, args) {
   return { args: nextArgs };
 }
 
+// Layout properties worth capturing for pattern replay.
+const LAYOUT_CONFIG_KEYS = [
+  'direction', 'gap', 'gapVariable',
+  'padding', 'paddingVariable',
+  'paddingTop', 'paddingTopVariable',
+  'paddingRight', 'paddingRightVariable',
+  'paddingBottom', 'paddingBottomVariable',
+  'paddingLeft', 'paddingLeftVariable',
+  'cornerRadius', 'cornerRadiusVariable',
+  'fillVariable', 'strokeVariable', 'strokeWeight',
+  'primaryAxisAlignItems', 'counterAxisAlignItems',
+  'layoutSizingHorizontal', 'layoutSizingVertical',
+];
+
+/**
+ * Extract the pattern prefix from a frame name (text before first ":").
+ * Returns null if no valid prefix found.
+ */
+function getPatternPrefix(name) {
+  if (!name) return null;
+  const colonIdx = name.indexOf(':');
+  if (colonIdx <= 0) return null;
+  const prefix = name.slice(0, colonIdx).trim();
+  return prefix.length >= 3 ? prefix : null;
+}
+
+/**
+ * Capture layout config from create_frame args for pattern learning.
+ * Only stores properties that were explicitly provided (not defaults).
+ */
+function captureLayoutConfig(args) {
+  const config = {};
+  for (const key of LAYOUT_CONFIG_KEYS) {
+    if (args[key] !== undefined && args[key] !== null) {
+      config[key] = args[key];
+    }
+  }
+  return Object.keys(config).length > 0 ? config : null;
+}
+
+/**
+ * Apply a stored layout config as defaults — only for properties
+ * not already specified in the caller's args. Returns the merged args
+ * and a summary of what was auto-applied.
+ */
+function applyLayoutReplay(args, layoutConfig, knowledgeStore, patternPrefix) {
+  const applied = {};
+  const merged = { ...args };
+  for (const [key, value] of Object.entries(layoutConfig)) {
+    if (merged[key] === undefined || merged[key] === null) {
+      merged[key] = value;
+      applied[key] = value;
+    }
+  }
+  return { merged, applied };
+}
+
 function register(server, context) {
-  const { bridge, buildManifest, dsCache, session, requirePhase, advancePhase, registerTool } = context;
+  const { bridge, buildManifest, dsCache, knowledgeStore, session, requirePhase, advancePhase, registerTool } = context;
 
   // ── figma_create_frame ────────────────────────────────────────
   registerTool(
@@ -237,6 +294,23 @@ function register(server, context) {
         return componentGate;
       }
 
+      // ── Layout Structure Replay ────────────────────────────────
+      // If the frame name matches a confirmed/verified pattern with a
+      // stored layoutConfig, apply it as defaults for unspecified props.
+      let layoutReplay;
+      const prefix = getPatternPrefix(args.name);
+      if (prefix && knowledgeStore) {
+        const pattern = knowledgeStore.getPattern(prefix);
+        if (pattern?.layoutConfig && (pattern.confidence === 'confirmed' || pattern.confidence === 'verified')) {
+          const replay = applyLayoutReplay(args, pattern.layoutConfig, knowledgeStore, prefix);
+          if (Object.keys(replay.applied).length > 0) {
+            args = replay.merged;
+            layoutReplay = replay.applied;
+            session.replaySavings = (session.replaySavings || 0) + 1;
+          }
+        }
+      }
+
       // Warn on NONE direction — breaks auto-layout portability
       let noneWarning;
       if (args.direction === 'NONE') {
@@ -273,17 +347,33 @@ function register(server, context) {
       }
       surfaceBindingFeedback(result, createArgs.name || 'create_frame');
 
+      // ── Capture layout config for pattern learning ─────────────
+      if (prefix && createArgs.parentId) {
+        if (!session._frameLayoutConfigs) session._frameLayoutConfigs = new Map();
+        // Store config from first occurrence only (subsequent instances
+        // confirm the pattern but shouldn't overwrite the baseline).
+        if (!session._frameLayoutConfigs.has(prefix)) {
+          const config = captureLayoutConfig(createArgs);
+          if (config) {
+            session._frameLayoutConfigs.set(prefix, config);
+          }
+        }
+      }
+
       return {
         nodeId,
         ...result,
         _placement: !args.parentId ? { x: createArgs.x, y: createArgs.y } : undefined,
+        _layoutReplay: layoutReplay || undefined,
         _componentCheck: componentGate?.warning || undefined,
         _noneWarning: noneWarning || undefined,
-        hint: noneWarning
-          ? noneWarning
-          : result?.bindingFailures
-            ? 'Frame created but some DS bindings FAILED — check warnings above. Fix before continuing.'
-            : 'Frame created. Add children with figma_create_text, figma_create_frame, or figma_insert_component.',
+        hint: layoutReplay
+          ? `Frame created with layout replay from "${prefix}" pattern (${Object.keys(layoutReplay).length} properties auto-applied). Override with explicit params if this instance needs different values.`
+          : noneWarning
+            ? noneWarning
+            : result?.bindingFailures
+              ? 'Frame created but some DS bindings FAILED — check warnings above. Fix before continuing.'
+              : 'Frame created. Add children with figma_create_text, figma_create_frame, or figma_insert_component.',
       };
     }
   );
@@ -505,4 +595,4 @@ function register(server, context) {
   );
 }
 
-module.exports = { register, checkComponentFirstGate, getComponentFirstMatch };
+module.exports = { register, checkComponentFirstGate, getComponentFirstMatch, getPatternPrefix, captureLayoutConfig, applyLayoutReplay };

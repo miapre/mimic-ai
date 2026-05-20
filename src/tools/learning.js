@@ -219,6 +219,13 @@ function register(server, context) {
             recipe.defaultVariants = { ...(existing?.defaultVariants || {}), ...variantConfig };
           }
         }
+        // Persist learned text node structure for batch optimization
+        if (session._textNodeStructures && resolvedKey) {
+          const textStructure = session._textNodeStructures.get(resolvedKey);
+          if (textStructure && textStructure.nodeNames.length > 0) {
+            recipe.textNodes = textStructure.nodeNames;
+          }
+        }
         knowledgeStore.setComponent(storeKey, recipe);
       }
       for (const prim of primitives) {
@@ -257,13 +264,22 @@ function register(server, context) {
           namePatterns.set(prefix, (namePatterns.get(prefix) || 0) + 1);
         }
       }
+      // Captured layout configs from this build session (set by figma_create_frame)
+      const frameLayoutConfigs = session._frameLayoutConfigs || new Map();
+
       for (const [prefix, count] of namePatterns) {
         if (count >= 2) {
           // This prefix appeared 2+ times in the current build — it's a layout pattern
           const existing = knowledgeStore.getPattern(prefix);
+          const capturedConfig = frameLayoutConfigs.get(prefix) || null;
           const updated = existing
             ? { ...promoter.incrementUsage(existing), occurrences: (existing.occurrences || 0) + count }
             : { description: `Recurring frame structure "${prefix}: ..." (${count} instances in ${screenName})`, buildCount: 1, occurrences: count, confidence: 'new', screen: screenName };
+          // Attach layout config from the first instance — only if not already stored
+          // (existing patterns keep their config; new patterns get it from this build)
+          if (capturedConfig && !updated.layoutConfig) {
+            updated.layoutConfig = capturedConfig;
+          }
           const promoted = promoter.maybePromote(updated);
           knowledgeStore.setPattern(prefix, promoted);
         }

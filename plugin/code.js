@@ -1584,6 +1584,74 @@ handlers.set_component_text_by_id = function (payload) {
   };
 };
 
+handlers.batch_set_component_text = function (payload) {
+  var node = figma.getNodeById(normalizeNodeId(payload.nodeId));
+  if (!node) throw { error: 'NODE_NOT_FOUND', property: 'nodeId', message: 'Node not found: ' + payload.nodeId, available: [], recovery: 'Check nodeId.' };
+
+  var overrides = payload.overrides || [];
+  if (!Array.isArray(overrides) || overrides.length === 0) {
+    throw { error: 'EMPTY_OVERRIDES', message: 'overrides array is required and must not be empty.', available: [], recovery: 'Provide [{textNodeName, content}] array.' };
+  }
+
+  // Collect all text nodes in one walk
+  var textNodes = {};
+  function walk(n) {
+    if (n.type === 'TEXT') {
+      // Store first match per name (same as set_component_text)
+      if (!textNodes[n.name]) textNodes[n.name] = n;
+    }
+    if ('children' in n) {
+      for (var i = 0; i < n.children.length; i++) walk(n.children[i]);
+    }
+  }
+  walk(node);
+
+  var results = [];
+  var bt = createBindingTracker();
+
+  for (var i = 0; i < overrides.length; i++) {
+    var ov = overrides[i];
+    var textNodeName = ov.textNodeName;
+    var content = ov.content || '';
+    var found = textNodes[textNodeName] || null;
+
+    if (!found) {
+      results.push({
+        textNodeName: textNodeName,
+        ok: false,
+        error: 'TEXT_NODE_NOT_FOUND',
+        available: Object.keys(textNodes),
+      });
+      continue;
+    }
+
+    found.characters = content;
+
+    if (ov.fillVariable) {
+      bt.track('fillVariable[' + textNodeName + ']', bindFillVariable(found, ov.fillVariable), 'variable "' + ov.fillVariable + '" not found');
+    }
+
+    results.push({
+      textNodeName: textNodeName,
+      nodeId: found.id,
+      ok: true,
+      characters: content,
+    });
+  }
+
+  var bindingResult = bt.result();
+  return {
+    nodeId: node.id,
+    total: overrides.length,
+    succeeded: results.filter(function (r) { return r.ok; }).length,
+    failed: results.filter(function (r) { return !r.ok; }).length,
+    results: results,
+    applied: bindingResult.applied,
+    warnings: bindingResult.warnings,
+    bindingFailures: bindingResult.bindingFailures,
+  };
+};
+
 handlers.set_variant = function (payload) {
   var node = figma.getNodeById(normalizeNodeId(payload.nodeId));
   if (!node) throw { error: 'NODE_NOT_FOUND', property: 'nodeId', message: 'Node not found: ' + payload.nodeId, available: [], recovery: 'Check nodeId.' };

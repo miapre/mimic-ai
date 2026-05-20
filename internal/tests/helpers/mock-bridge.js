@@ -121,6 +121,21 @@ class MockBridge {
       'get_node_children': { id: payload?.nodeId, children: [] },
       'get_node_parent': { id: payload?.nodeId, parentId: 'parent:1', parentName: 'Parent' },
       'set_component_text': { nodeId: payload?.nodeId, applied: true },
+      'batch_set_component_text': {
+        nodeId: payload?.nodeId,
+        total: (payload?.overrides || []).length,
+        succeeded: (payload?.overrides || []).length,
+        failed: 0,
+        results: (payload?.overrides || []).map((ov, i) => ({
+          textNodeName: ov.textNodeName,
+          nodeId: 'text-mock:' + (++this._counter),
+          ok: true,
+          characters: ov.content,
+        })),
+        applied: {},
+        warnings: [],
+        bindingFailures: false,
+      },
       'set_component_text_by_id': {
         nodeId: payload?.textNodeId,
         parentNodeId: payload?.nodeId,

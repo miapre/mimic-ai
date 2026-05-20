@@ -266,8 +266,62 @@ instance needs different variants), pass `applyRecipe: false`
 to `figma_insert_component`.
 
 Template replay only applies variant configs — text overrides
-still require `figma_set_component_text` for every instance
-(text content varies).
+still require `figma_batch_set_component_text` or individual
+`figma_set_component_text` for every instance (text content
+varies).
+
+## Layout Structure Replay
+
+When `figma_create_frame` is called with a name matching a
+confirmed/verified pattern prefix (e.g., "Card: Revenue"
+matches pattern "Card"), stored layout properties are
+auto-applied as defaults for any properties not explicitly
+provided.
+
+Check `_layoutReplay` in the response:
+- If present: layout properties were auto-applied from the
+  pattern. Override with explicit params if this instance needs
+  different values.
+- If absent: no matching pattern, or pattern is not yet
+  confirmed (needs 3+ builds).
+
+Layout properties captured: direction, gap, padding,
+cornerRadius, fill/stroke variables, alignment, sizing modes.
+
+The system learns layout configs from the FIRST instance of a
+pattern prefix per build session. Subsequent builds with the
+same prefix reuse the stored config once promoted to
+confirmed/verified.
+
+## Text Batch Optimization
+
+Use `figma_batch_set_component_text` to set ALL text nodes
+on a component instance in a single call instead of multiple
+`figma_set_component_text` calls.
+
+```
+figma_batch_set_component_text({
+  nodeId: "component-instance-id",
+  overrides: [
+    { textNodeName: "Heading", content: "Dashboard" },
+    { textNodeName: "Supporting text", content: "Welcome" },
+    { textNodeName: "Badge text", content: "Active" }
+  ]
+})
+```
+
+Key rules:
+- Use after `figma_insert_component` — the
+  `configurationHints.textNodes` in the response tells you
+  which text nodes exist.
+- Saves N-1 tool calls per component (where N = text node
+  count). A component with 4 text nodes saves 3 tool calls.
+- Text node structure is learned per componentKey and
+  persisted in the knowledge store after the build report.
+- Partial failures are reported per override — fix the
+  textNodeName and retry only the failed ones.
+- Tracks overrides in componentTextTracker for the build
+  report's unoverridden text audit.
 
 ## Bulk Table Builder
 

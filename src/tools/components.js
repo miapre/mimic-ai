@@ -372,6 +372,74 @@ function register(server, context) {
     }
   );
 
+  // ── figma_batch_set_component_text ─────────────────────────────
+  registerTool(
+    'figma_batch_set_component_text',
+    'Sets ALL text overrides on a component instance in a single call. Pass an array of {textNodeName, content} overrides. Saves 1 tool call per text node vs. individual figma_set_component_text calls. Use after figma_insert_component — configurationHints.textNodes tells you which nodes to override.',
+    {
+      type: 'object',
+      properties: {
+        nodeId: { type: 'string', description: 'Component instance node ID.' },
+        overrides: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              textNodeName: { type: 'string', description: 'Name of the text node within the component.' },
+              content: { type: 'string', description: 'New text content.' },
+              fillVariable: { type: 'string', description: 'Optional DS text color variable path.' },
+            },
+            required: ['textNodeName', 'content'],
+          },
+          description: 'Array of text overrides to apply.',
+        },
+      },
+      required: ['nodeId', 'overrides'],
+    },
+    async (args) => {
+      requirePhase(2, PHASE_HINT);
+      const result = await bridge.send('batch_set_component_text', args);
+      session.toolCallCount++;
+      surfaceBindingFeedback(result, 'batch_set_component_text');
+
+      // Track overrides — mark all successful text nodes as overridden
+      const tracker = session.componentTextTracker?.get(args.nodeId);
+      if (tracker && result?.results) {
+        for (const r of result.results) {
+          if (r.ok) {
+            tracker.overridden.add(r.textNodeName);
+            if (r.nodeId) tracker.overridden.add(r.nodeId);
+          }
+        }
+      }
+
+      // Learn text node structure for this component
+      const compKey = session._nodeComponentKeys?.get(args.nodeId);
+      if (compKey && result?.succeeded > 0) {
+        if (!session._textNodeStructures) session._textNodeStructures = new Map();
+        const nodeNames = (result.results || [])
+          .filter(r => r.ok)
+          .map(r => r.textNodeName);
+        if (nodeNames.length > 0) {
+          session._textNodeStructures.set(compKey, {
+            nodeNames,
+            count: nodeNames.length,
+          });
+        }
+      }
+
+      const failed = result?.failed || 0;
+      return {
+        ...result,
+        hint: failed > 0
+          ? `${failed} text node(s) not found — check textNodeName spelling against configurationHints.textNodes.`
+          : result?.bindingFailures
+            ? 'All text set but some fill bindings FAILED — check warnings.'
+            : `All ${result?.succeeded || 0} text node(s) set in one call.`,
+      };
+    }
+  );
+
   // ── figma_set_variant ─────────────────────────────────────────
   registerTool(
     'figma_set_variant',
