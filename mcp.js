@@ -735,8 +735,12 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 });
 
 async function main() {
-  // Start bridge (auto-starts, invisible to user)
-  await bridge.start();
+  // Connect the MCP transport FIRST so the tools always register, even if the
+  // bridge can't come up. A bridge problem must never leave a Claude session
+  // with zero Mimic tools — it surfaces at call time with a clear message
+  // instead of the whole server silently failing to start.
+  const transport = new StdioServerTransport();
+  await server.connect(transport);
 
   // Load knowledge store if it exists. load() never throws — a corrupt file
   // or unsupported schema version is backed up and replaced with a fresh
@@ -756,9 +760,15 @@ async function main() {
     session.knowledgeStoreNotice = knowledgeStore.loadWarning.message;
   }
 
-  // Connect MCP
-  const transport = new StdioServerTransport();
-  await server.connect(transport);
+  // Bring up the bridge. Not fatal: start() attaches to an already-running
+  // Mimic bridge when the port is taken (this session then proxies build
+  // operations through it), so a second Claude session still gets a working
+  // Mimic. Any other failure is logged and the tools keep working degraded.
+  try {
+    await bridge.start();
+  } catch (err) {
+    console.error(`[mimic-ai] Bridge unavailable: ${err.message}`);
+  }
 }
 
 // Only auto-start when run directly (`node mcp.js` / the `mimic-ai` bin entry),

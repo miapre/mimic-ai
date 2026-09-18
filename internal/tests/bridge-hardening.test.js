@@ -66,23 +66,49 @@ async function withBridge(opts, fn) {
   }
 }
 
-describe('Bridge hardening — port takeover (defect 1)', () => {
-  it('a second bridge on the same port fails with a Mimic-specific message, without killing the first', async () => {
+describe('Bridge — multi-session attach (defect 1)', () => {
+  it('a second bridge on the same Mimic port attaches as a client instead of failing, without killing the first', async () => {
     const port = BASE_PORT + 0;
     await withBridge({ port }, async (bridgeA) => {
       const bridgeB = new Bridge({ port });
-      await assert.rejects(
-        () => bridgeB.start(),
-        (err) => {
-          assert.match(err.message, /Another Mimic AI session is already running/);
-          assert.match(err.message, /MIMIC_BRIDGE_PORT/);
-          return true;
-        }
-      );
+      await bridgeB.start(); // must NOT reject — it attaches as a client
+      try {
+        assert.equal(bridgeB.mode, 'client');
+        assert.equal(bridgeA.mode, 'owner');
+        // The first bridge must be completely unharmed — no process was killed.
+        assert.equal(bridgeA.connected, false);
+        assert.ok(bridgeA.server.listening);
+      } finally {
+        await bridgeB.stop().catch(() => {});
+      }
+    });
+  });
 
-      // The first bridge must be completely unharmed — no process was killed.
-      assert.equal(bridgeA.connected, false);
-      assert.ok(bridgeA.server.listening);
+  it('a client-mode bridge proxies operations to the owner and back to the plugin', async () => {
+    const port = BASE_PORT + 5;
+    await withBridge({ port }, async (bridgeA) => {
+      // Simulate the Figma plugin: connect to the owner and echo every request
+      // back as a successful result keyed by the same id.
+      const plugin = await connectClient(port);
+      plugin.on('message', (data) => {
+        const msg = JSON.parse(data.toString());
+        if (msg.type === 'mimic_hello') return;
+        plugin.send(JSON.stringify({ id: msg.id, result: { echoed: msg.type } }));
+      });
+      sendHello(plugin);
+      await waitFor(() => bridgeA.connected);
+
+      const bridgeB = new Bridge({ port });
+      await bridgeB.start();
+      try {
+        assert.equal(bridgeB.mode, 'client');
+        // A single op proxied through the owner to the (fake) plugin.
+        const single = await bridgeB.send('get_page_nodes', {});
+        assert.deepEqual(single, { echoed: 'get_page_nodes' });
+      } finally {
+        plugin.close();
+        await bridgeB.stop().catch(() => {});
+      }
     });
   });
 
@@ -120,6 +146,23 @@ describe('Bridge hardening — port takeover (defect 1)', () => {
       if (prior === undefined) delete process.env.MIMIC_BRIDGE_PORT;
       else process.env.MIMIC_BRIDGE_PORT = prior;
     }
+  });
+
+  it('accepts the Figma plugin WebSocket origins (figma.com and sandboxed "null"), rejects arbitrary web origins', async () => {
+    const port = BASE_PORT + 6;
+    await withBridge({ port }, async () => {
+      const tryOrigin = (origin) => new Promise((resolve) => {
+        const ws = new WebSocket(`ws://127.0.0.1:${port}`, origin === undefined ? {} : { headers: { Origin: origin } });
+        const t = setTimeout(() => { try { ws.terminate(); } catch (_) {} resolve('timeout'); }, 2000);
+        ws.on('open', () => { clearTimeout(t); ws.close(); resolve('accepted'); });
+        ws.on('error', () => { clearTimeout(t); resolve('rejected'); });
+      });
+
+      assert.equal(await tryOrigin(undefined), 'accepted', 'no-origin (bridge client) must connect');
+      assert.equal(await tryOrigin('null'), 'accepted', 'sandboxed-iframe "null" origin must connect');
+      assert.equal(await tryOrigin('https://www.figma.com'), 'accepted', 'Figma plugin origin must connect');
+      assert.equal(await tryOrigin('https://evil.example.com'), 'rejected', 'arbitrary web origin must be blocked');
+    });
   });
 
   it('/status no longer reports the removed pendingOps field', async () => {

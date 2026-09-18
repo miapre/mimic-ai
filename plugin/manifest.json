@@ -7,7 +7,7 @@
   "editorType": ["figma"],
   "permissions": ["teamlibrary"],
   "networkAccess": {
-    "allowedDomains": ["localhost"],
+    "allowedDomains": ["ws://localhost:3056"],
     "reasoning": "Connects to the local Mimic AI bridge server on localhost:3056 via WebSocket."
   }
 }

@@ -1381,8 +1381,8 @@ handlers.insert_component = function (payload) {
   // two instances for one insert. `timedOut` tracks whether the timeout
   // already fired; the "create instance" branch below is gated on it, so
   // a late resolution after timeout is a no-op instead of a duplicate
-  // instance. clearTimeout stops the pending rejection once the import
-  // wins normally, so it never fires after a successful fast import.
+  // instance. clearTimeout stops the pending rejection once the fast
+  // path wins normally, so it never fires after a successful insert.
   var timedOut = false;
   var timeoutHandle = null;
 

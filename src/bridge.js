@@ -22,6 +22,12 @@ class Bridge {
     this.defaultTimeout = opts.defaultTimeout ?? 120000;
 
     this.connected = false;
+    // 'owner'  — this instance binds the port and holds the plugin WebSocket.
+    // 'client' — the port was already serving a Mimic bridge, so this instance
+    //            proxies build operations to that owner over HTTP /execute.
+    // Lets multiple Claude sessions share the one Figma plugin instead of the
+    // later sessions failing to start.
+    this.mode = 'owner';
     this.ws = null;
     this.server = null;
     this.wss = null;
@@ -47,12 +53,16 @@ class Bridge {
   // ── Lifecycle ───────────────────────────────────────────────────────
 
   /**
-   * Start HTTP + WebSocket server.
+   * Start the bridge. Never kills anything on the target port.
    *
-   * Never kills anything on the target port. If the port is taken, we
-   * probe it to tell apart "another Mimic AI session" (actionable message,
-   * points at MIMIC_BRIDGE_PORT) from "some unrelated process" (generic
-   * EADDRINUSE guidance) — and fail startup either way.
+   * If the port is free, this instance becomes the owner: it binds the
+   * HTTP + WebSocket server and holds the Figma plugin connection.
+   *
+   * If the port is already serving another Mimic bridge, this instance
+   * attaches as a client (mode = 'client') and proxies build operations to
+   * the owner over HTTP /execute — so a second Claude session gets a working
+   * Mimic instead of a hard failure. If the port is held by some unrelated
+   * process, startup still fails with generic EADDRINUSE guidance.
    *
    * @returns {Promise<void>}
    */
@@ -64,7 +74,7 @@ class Bridge {
 
       this.wss = new WebSocketServer({
         server: this.server,
-        verifyClient: ({ origin }) => this._isLocalOrigin(origin),
+        verifyClient: ({ origin }) => this._isAllowedWsOrigin(origin),
       });
       this.wss.on('connection', (socket) => this._onConnection(socket));
       // ws re-emits the underlying server's bind failures on the
@@ -79,11 +89,21 @@ class Bridge {
         this.server.removeListener('error', onError);
         if (err && err.code === 'EADDRINUSE') {
           const isMimicBridge = await this._probeExistingBridge();
+          // Discard the server/wss we built but never bound.
+          try { this.wss.close(); } catch (_) {}
+          try { this.server.close(); } catch (_) {}
+          this.wss = null;
+          this.server = null;
           if (isMimicBridge) {
-            reject(new Error(
-              `Another Mimic AI session is already running (bridge on port ${this.port}). ` +
-              `Close the other session or set MIMIC_BRIDGE_PORT to run this one on a different port.`
-            ));
+            // Another Claude session already owns the port. Attach as a client
+            // and proxy operations through it instead of failing — every
+            // session gets a working Mimic against the one Figma plugin.
+            this.mode = 'client';
+            console.error(
+              `[Mimic AI bridge] Port ${this.port} already serves a Mimic bridge; ` +
+              `attaching as a client and proxying build operations through it.`
+            );
+            resolve();
           } else {
             reject(new Error(
               `Port ${this.port} is already in use by another process (not a Mimic AI bridge). ` +
@@ -98,6 +118,7 @@ class Bridge {
 
       this.server.listen(this.port, '127.0.0.1', () => {
         this.server.removeListener('error', onError);
+        this.mode = 'owner';
         resolve();
       });
     });
@@ -128,6 +149,104 @@ class Bridge {
       );
       req.on('timeout', () => { req.destroy(); resolve(false); });
       req.on('error', () => resolve(false));
+    });
+  }
+
+  /**
+   * Client mode: forward one operation to the owner bridge over HTTP /execute.
+   * If the owner has exited (connection refused), try to become the owner
+   * ourselves so the session self-heals; the Figma plugin auto-reconnects to
+   * whoever holds the port (see ui.html's reconnect loop).
+   *
+   * @returns {Promise<object>}
+   */
+  _executeViaOwner(type, payload, timeout) {
+    const effectiveTimeout = timeout ?? this.defaultTimeout;
+    const body = JSON.stringify({ type, payload: payload ?? {}, timeout: effectiveTimeout });
+
+    return new Promise((resolve, reject) => {
+      const req = http.request(
+        {
+          host: '127.0.0.1',
+          port: this.port,
+          path: '/execute',
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Content-Length': Buffer.byteLength(body),
+          },
+          // Give the owner its own request timeout plus headroom to answer.
+          timeout: effectiveTimeout + 5000,
+        },
+        (res) => {
+          let data = '';
+          res.on('data', (chunk) => { data += chunk; });
+          res.on('end', () => {
+            let parsed;
+            try {
+              parsed = data ? JSON.parse(data) : {};
+            } catch (_) {
+              reject(new Error(`Owner bridge returned an unparseable response for "${type}"`));
+              return;
+            }
+            if (res.statusCode >= 200 && res.statusCode < 300) {
+              resolve(parsed);
+            } else {
+              reject(new Error(parsed.error || `Owner bridge returned HTTP ${res.statusCode} for "${type}"`));
+            }
+          });
+        }
+      );
+
+      req.on('timeout', () => {
+        req.destroy(new Error(`Owner bridge timeout after ${effectiveTimeout}ms for "${type}"`));
+      });
+
+      req.on('error', async (err) => {
+        if (err && err.code === 'ECONNREFUSED') {
+          // The owner exited. Try to take over the port; if we succeed, the
+          // plugin reconnects to us within a few seconds and we run the op
+          // directly over the WebSocket.
+          await this.start().catch(() => {});
+          if (this.mode === 'owner') {
+            try {
+              await this._waitForPlugin(4000);
+              const result = (type === 'batch_execute')
+                ? await this.sendBatch(payload && payload.operations, timeout)
+                : await this.send(type, payload, timeout);
+              resolve(result);
+            } catch (retryErr) {
+              reject(retryErr);
+            }
+            return;
+          }
+          // Another session grabbed the port first — it's the new owner now.
+          reject(new Error(
+            `PLUGIN_DISCONNECTED: The Mimic bridge this session was proxying to exited; ` +
+            `the bridge has been re-established. Retry the operation. Do NOT fall back to ` +
+            `other Figma tools — they bypass DS enforcement.`
+          ));
+          return;
+        }
+        reject(err);
+      });
+
+      req.write(body);
+      req.end();
+    });
+  }
+
+  /** Resolve true once the plugin executor is connected, or false after `ms`. */
+  _waitForPlugin(ms) {
+    return new Promise((resolve) => {
+      const started = Date.now();
+      const tick = () => {
+        if (this.connected) return resolve(true);
+        if (Date.now() - started >= ms) return resolve(false);
+        const t = setTimeout(tick, 50);
+        if (t.unref) t.unref();
+      };
+      tick();
     });
   }
 
@@ -176,6 +295,10 @@ class Bridge {
    * @returns {Promise<object>}
    */
   send(type, payload, timeout) {
+    if (this.mode === 'client') {
+      return this._executeViaOwner(type, payload, timeout);
+    }
+
     const msg = this.formatMessage(type, payload);
     const effectiveTimeout = timeout ?? this.defaultTimeout;
 
@@ -212,6 +335,10 @@ class Bridge {
    * @returns {Promise<{results: Array, totalOps: number, succeeded: number, failed: number}>}
    */
   sendBatch(operations, timeout) {
+    if (this.mode === 'client') {
+      return this._executeViaOwner('batch_execute', { operations }, timeout);
+    }
+
     const CHUNK_SIZE = 50;
 
     // Normalize node IDs but preserve $resultOf references
@@ -528,6 +655,24 @@ class Bridge {
     } catch { return false; }
   }
 
+  /**
+   * Origin allowlist for the WebSocket handshake (the plugin executor path).
+   * Broader than _isLocalOrigin because the real client is the Figma plugin
+   * iframe, which connects with a Figma origin — or the literal string "null"
+   * when Figma runs the UI in a sandboxed iframe — NOT a localhost origin.
+   * The tighter _isLocalOrigin still guards the HTTP /execute endpoint, and
+   * the mimic_hello handshake still gates who becomes the executor, so this
+   * only widens who may open a socket, not who may drive Figma.
+   */
+  _isAllowedWsOrigin(origin) {
+    if (!origin || origin === 'null') return true; // no header, or sandboxed-iframe origin
+    try {
+      const { hostname } = new URL(origin);
+      if (hostname === 'localhost' || hostname === '127.0.0.1') return true;
+      return hostname === 'figma.com' || hostname.endsWith('.figma.com');
+    } catch { return false; }
+  }
+
   _handleHttp(req, res) {
     const origin = req.headers.origin;
 
@@ -604,7 +749,11 @@ class Bridge {
           res.end(JSON.stringify({ error: 'Missing "type" field' }));
           return;
         }
-        const result = await this.send(type, payload, timeout);
+        // Route batches through sendBatch so chunking / $resultOf handling runs
+        // on the owner — a proxying client posts the whole batch as one call.
+        const result = (type === 'batch_execute' && payload && Array.isArray(payload.operations))
+          ? await this.sendBatch(payload.operations, timeout)
+          : await this.send(type, payload, timeout);
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify(result));
       } catch (err) {
