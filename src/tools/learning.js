@@ -388,9 +388,21 @@ function register(server, context) {
       const unjustifiedPrimitives = primitives.filter(p => !p.reason || p.reason.length < 10);
       const totalBuiltElements = totalInstances + primitives.length;
       const penalizedElements = totalInstances + unjustifiedPrimitives.length;
-      const componentUsageRatio = penalizedElements > 0 ? totalInstances / penalizedElements : 1;
+      // A build that places ZERO DS component instances is a component-first
+      // failure, no matter how well its primitives are justified. Justified
+      // primitives are an exemption WITHIN a component-backed build — never a
+      // licence to build an entire screen out of primitives. A componentless
+      // result almost always means discovery or mapping was degraded (expired
+      // FIGMA_TOKEN, missing Figma `search_design_system` MCP, or a stale
+      // component cache), so it must fail loudly. Previously this passed
+      // vacuously: all-justified primitives drove penalizedElements to 0, and
+      // the `: 1` fallback reported 100% usage / PASS with 0 components.
+      const zeroComponentBuild = totalInstances === 0 && totalBuiltElements > 0;
+      const componentUsageRatio = zeroComponentBuild
+        ? 0
+        : (penalizedElements > 0 ? totalInstances / penalizedElements : 1);
       const componentUsagePercent = Math.round(componentUsageRatio * 100);
-      const componentQualityGate = componentUsageRatio >= 0.8 ? 'PASS' : 'FAIL';
+      const componentQualityGate = (zeroComponentBuild || componentUsageRatio < 0.8) ? 'FAIL' : 'PASS';
       const componentNames = components.map((c) => c.name).join(', ');
       const gaps = knowledgeStore.getGaps();
       const gapEntries = Object.entries(gaps);
@@ -657,13 +669,18 @@ function register(server, context) {
       const justifiedCount = primitives.length - unjustifiedPrimitives.length;
       lines.push(`## Component-First Quality: ${componentQualityGate} (${componentUsagePercent}% component usage)`);
       lines.push('');
-      if (justifiedCount > 0) {
-        lines.push(`${justifiedCount} of ${primitives.length} primitive(s) are justified (no DS component exists). Only ${unjustifiedPrimitives.length} unjustified primitive(s) counted against the quality gate.`);
+      if (zeroComponentBuild) {
+        lines.push(`**Zero DS components were used in this build (${primitives.length} primitive type(s), ${totalInstances} component instances).** Justified primitives do not exempt a build from using *any* DS components — a componentless result means the design system was effectively unavailable, not that it had no matching components. The likely cause is degraded discovery: an expired FIGMA_TOKEN, the Figma \`search_design_system\` MCP not being connected, or a stale component cache serving removed keys. Re-run \`mimic_discover_ds\`, confirm real component keys resolve (\`mimic_map_components\`), and retry — do not build an entire screen from primitives.`);
         lines.push('');
-      }
-      if (componentQualityGate === 'FAIL') {
-        lines.push('Component usage is below the 80% minimum quality gate. Future builds should resolve missing elements with `mimic_map_components`, library search, and `figma_insert_component` before using primitives.');
-        lines.push('');
+      } else {
+        if (justifiedCount > 0) {
+          lines.push(`${justifiedCount} of ${primitives.length} primitive(s) are justified (no DS component exists). Only ${unjustifiedPrimitives.length} unjustified primitive(s) counted against the quality gate.`);
+          lines.push('');
+        }
+        if (componentQualityGate === 'FAIL') {
+          lines.push('Component usage is below the 80% minimum quality gate. Future builds should resolve missing elements with `mimic_map_components`, library search, and `figma_insert_component` before using primitives.');
+          lines.push('');
+        }
       }
 
       lines.push(`## Primitives: ${primitives.length} (${primitives.map((p) => `${p.element}: ${p.reason}`).join(', ') || 'none'})`);
@@ -978,7 +995,18 @@ function register(server, context) {
       // 0. Component-first quality gate failure — always leads the list when
       // failing. A build with a failing gate is never "all good", regardless
       // of what else is (or isn't) in this array.
-      if (componentQualityGate === 'FAIL') {
+      if (zeroComponentBuild) {
+        recommendations.push(
+          `**Component-first quality gate failed — zero DS components used.** This build placed ` +
+          `${totalInstances} component instances across ${primitives.length} primitive type(s). ` +
+          `Mimic exists to build with DS components; a componentless result means component ` +
+          `discovery was degraded, not that the DS had nothing to offer. Check: (1) FIGMA_TOKEN is ` +
+          `set and unexpired, (2) the Figma \`search_design_system\` MCP is connected, (3) the ` +
+          `component cache is fresh (re-run \`mimic_discover_ds\`; if most cached components are ` +
+          `flagged \`component_removed\`, the cache is stale). Then re-map and build with real ` +
+          `instances. Do not ship an all-primitive artboard.`
+        );
+      } else if (componentQualityGate === 'FAIL') {
         recommendations.push(
           `**Component-first quality gate failed:** ${componentUsagePercent}% component usage ` +
           `(minimum is 80%). ${unjustifiedPrimitives.length} unjustified primitive(s) were used ` +

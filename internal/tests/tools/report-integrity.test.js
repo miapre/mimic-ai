@@ -352,3 +352,63 @@ describe('mimic_ai_knowledge_read — surfaces knowledge store recovery warnings
     }
   });
 });
+
+describe('mimic_generate_build_report — zero-component quality gate', () => {
+  it('FAILS a build that used 0 DS components even when every primitive is justified (was a vacuous PASS)', async () => {
+    const h = createHarness();
+    try {
+      const result = await h.handlers.mimic_generate_build_report({
+        screenName: 'All Primitives Screen',
+        components: [],
+        primitives: [
+          { element: 'sidebar', reason: 'DS sidebar component does not fit this layout' },
+          { element: 'card', reason: 'mapped card component flagged removed in cache' },
+          { element: 'badge', reason: 'mapper resolved badge to the wrong component' },
+          { element: 'icon', reason: 'no generic DS icon component exists here' },
+        ],
+      });
+      assert.equal(result.componentQualityGate, 'FAIL', '0 instances must never pass the gate');
+      assert.equal(result.componentUsagePercent, 0, 'usage must read 0%, not a vacuous 100%');
+      const reportContent = fs.readFileSync(result.reportPath, 'utf-8');
+      assert.match(reportContent, /[Zz]ero DS components/, 'report must name the zero-component failure');
+    } finally {
+      cleanup(h.tmpDir);
+    }
+  });
+
+  it('still PASSES a component-backed build whose only primitives are justified (exemption preserved)', async () => {
+    const h = createHarness();
+    try {
+      const result = await h.handlers.mimic_generate_build_report({
+        screenName: 'Mostly Components Screen',
+        components: [{ name: 'Button', instances: 10 }],
+        primitives: [
+          { element: 'chart', reason: 'no DS chart component exists in this library' },
+        ],
+      });
+      assert.equal(result.componentQualityGate, 'PASS', 'justified primitives inside a component-backed build still pass');
+      assert.equal(result.componentUsagePercent, 100);
+    } finally {
+      cleanup(h.tmpDir);
+    }
+  });
+
+  it('FAILS the ordinary <80% case without claiming a zero-component failure', async () => {
+    const h = createHarness();
+    try {
+      const result = await h.handlers.mimic_generate_build_report({
+        screenName: 'Too Many Unjustified Screen',
+        components: [{ name: 'Button', instances: 1 }],
+        primitives: [
+          { element: 'card' }, { element: 'badge' }, { element: 'row' }, { element: 'tile' },
+        ],
+      });
+      assert.equal(result.componentQualityGate, 'FAIL');
+      assert.ok(result.componentUsagePercent < 80 && result.componentUsagePercent > 0);
+      const reportContent = fs.readFileSync(result.reportPath, 'utf-8');
+      assert.doesNotMatch(reportContent, /[Zz]ero DS components/, 'this is not a zero-component build');
+    } finally {
+      cleanup(h.tmpDir);
+    }
+  });
+});
