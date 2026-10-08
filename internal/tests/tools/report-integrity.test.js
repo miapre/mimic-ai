@@ -258,11 +258,11 @@ describe('mimic_generate_build_report — report write failure does not wedge th
   it('clears buildsSinceReport and advances to phase 5 even when the report write throws, with a fallback write and a warning', async () => {
     const h = createHarness();
     try {
-      // Force writes under the project "mimic/reports" dir to fail, as if
+      // Force writes under the project "mimic/builds" dir to fail, as if
       // cwd were unwritable — everything else (including the manifest, and
-      // the fallback under fakeHome/.mimic-ai/reports) still writes fine.
+      // the fallback under fakeHome/.mimic-ai/builds) still writes fine.
       fs.writeFileSync = (filePath, ...rest) => {
-        if (typeof filePath === 'string' && filePath.includes(path.join(fakeCwd, 'mimic', 'reports'))) {
+        if (typeof filePath === 'string' && filePath.includes(path.join(fakeCwd, 'mimic', 'builds'))) {
           throw new Error('EACCES: permission denied (simulated)');
         }
         return originalWriteFileSync(filePath, ...rest);
@@ -280,7 +280,7 @@ describe('mimic_generate_build_report — report write failure does not wedge th
 
       assert.ok(result.reportWriteWarning, 'a warning must be surfaced in the response');
       assert.ok(result.reportPath, 'a fallback path should still be returned');
-      assert.ok(result.reportPath.startsWith(path.join(fakeHome, '.mimic-ai', 'reports')), 'fallback should land under ~/.mimic-ai/reports');
+      assert.ok(result.reportPath.startsWith(path.join(fakeHome, '.mimic-ai', 'builds')), 'fallback should land under ~/.mimic-ai/builds');
       assert.ok(fs.existsSync(result.reportPath), 'fallback report file should actually exist on disk');
     } finally {
       cleanup(h.tmpDir);
@@ -290,12 +290,12 @@ describe('mimic_generate_build_report — report write failure does not wedge th
   it('degrades to a warning (does not throw) when BOTH the project dir and the fallback are unwritable', async () => {
     const h = createHarness();
     try {
-      // Only fail writes for the report itself (project + fallback paths both
-      // contain a "reports" segment) — knowledgeStore.save() writes to a
+      // Only fail writes for the report file itself (project + fallback both
+      // write "build-report.md") — knowledgeStore.save() writes to a
       // completely different path and must keep working normally; this test
       // is scoped to the report file write, not knowledge persistence.
       fs.writeFileSync = (filePath, ...rest) => {
-        if (typeof filePath === 'string' && filePath.includes('reports')) {
+        if (typeof filePath === 'string' && filePath.includes('build-report.md')) {
           throw new Error('EACCES: permission denied everywhere (simulated)');
         }
         return originalWriteFileSync(filePath, ...rest);

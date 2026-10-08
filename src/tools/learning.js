@@ -1370,15 +1370,19 @@ function register(server, context) {
       let reportPath = null;
       let reportWriteWarning = null;
       try {
-        const reportsDir = path.join(process.cwd(), 'mimic', 'reports');
+        // Per-build folder named "<date> <build name>" so every build's
+        // documents live together (report + any HTML export + future
+        // artifacts). Written under the current working directory, never a
+        // hardcoded location — keeps Mimic DS/host-agnostic for public use.
+        const reportsDir = path.join(process.cwd(), 'mimic', 'builds', `${date} ${safeName}`);
         if (!fs.existsSync(reportsDir)) fs.mkdirSync(reportsDir, { recursive: true });
-        reportPath = path.join(reportsDir, `build-${date}-${safeName}.md`);
+        reportPath = path.join(reportsDir, 'build-report.md');
         fs.writeFileSync(reportPath, reportContent, 'utf-8');
       } catch (err) {
         try {
-          const fallbackDir = path.join(os.homedir(), '.mimic-ai', 'reports');
+          const fallbackDir = path.join(os.homedir(), '.mimic-ai', 'builds', `${date} ${safeName}`);
           if (!fs.existsSync(fallbackDir)) fs.mkdirSync(fallbackDir, { recursive: true });
-          reportPath = path.join(fallbackDir, `build-${date}-${safeName}.md`);
+          reportPath = path.join(fallbackDir, 'build-report.md');
           fs.writeFileSync(reportPath, reportContent, 'utf-8');
           reportWriteWarning = `Could not write the report to the project directory (${err.message}). Saved to ${reportPath} instead.`;
         } catch (fallbackErr) {

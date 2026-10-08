@@ -10,3 +10,5 @@ research/
 
 # MCP Registry publisher credentials — never commit
 .mcpregistry_*
+Builds/
+.mimic-ai/

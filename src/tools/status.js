@@ -805,6 +805,22 @@ function register(server, context) {
         };
       }
 
+      // ── Single-library auto-select ──
+      // When exactly one DS library is enabled on the file, select it
+      // automatically so the library-file-key + REST discovery path runs —
+      // the SAME path the multi-library flow takes after the user picks a
+      // library. Without this, a single-library file silently skips file-key
+      // capture, which skips REST discovery of the library's published text /
+      // fill / effect styles and its full published component set, leaving the
+      // build with variables only. DS-agnostic: applies to any single enabled
+      // library (private or public); community libraries the plugin cannot
+      // enumerate return 0 libraries here and are handled by the
+      // externalVariables / skipRestApi paths instead.
+      if (!session.selectedLibraryKey && varDiscovery.libraries && varDiscovery.libraries.length === 1) {
+        session.selectedLibraryKey = varDiscovery.libraries[0].name;
+        discovery.setLibrary(session.selectedLibraryKey);
+      }
+
       // ── Step 2: Cache variables in MCP + preload in plugin ──
       const { inferCategory } = require('./ds-setup');
       let variablesCached = 0;
