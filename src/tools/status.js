@@ -877,6 +877,29 @@ function register(server, context) {
         knowledgeStore.save();
       }
 
+      // Auto-derive the library file key from a published key already on the
+      // page, so a single-library file doesn't have to prompt for it. Any
+      // remote component instance carries a published key whose source file
+      // (meta.file_key) IS the library's file key. If the page happens to hold
+      // instances from a different enabled library, the downstream
+      // variable-source-mismatch check still catches it. Falls back to the
+      // prompt below on any failure (empty page, local-only keys, API error).
+      if (selectedLib && !libraryFileKey && !args.skipRestApi && figmaRest
+          && typeof figmaRest.resolveLibraryFileKey === 'function') {
+        try {
+          const scan = await bridge.send('discover_library_components', { fileKey: args.fileKey });
+          const remote = ((scan && scan.components) || []).find(c => c && c.isRemote && c.key);
+          if (remote) {
+            const derivedKey = await figmaRest.resolveLibraryFileKey(remote.key);
+            if (derivedKey) {
+              libraryFileKey = derivedKey;
+              knowledgeStore.setLibraryFileKey(selectedLib, derivedKey);
+              knowledgeStore.save();
+            }
+          }
+        } catch (_) { /* fall through to the file-key prompt below */ }
+      }
+
       // If no library file key and we have a selected library, prompt the user
       // (unless skipRestApi is set — e.g. community libraries with no accessible file key)
       if (selectedLib && !libraryFileKey && !args.skipRestApi) {
@@ -1063,6 +1086,39 @@ function register(server, context) {
           }
         }
       } catch (e) { /* non-fatal */ }
+
+      // ── DS-copilot guardrail: refuse to build without a design system ──
+      // Mimic only ever builds from DS components/styles/variables. If this
+      // file surfaced no DS at all — no enabled library, and zero variables,
+      // components and styles discovered — there is nothing to build FROM.
+      // Stop and tell the user instead of silently proceeding into a
+      // variable-less, component-less build. Community libraries the plugin
+      // can't enumerate, and the explicit skipRestApi / externalVariables
+      // flows, are exempt — those reach their DS through other routes.
+      if (variablesCached === 0 && componentsCached === 0 && stylesCached === 0
+          && (!varDiscovery.libraries || varDiscovery.libraries.length === 0)
+          && !session.selectedLibraryKey
+          && !args.skipRestApi && !args.externalVariables) {
+        session.toolCallCount++;
+        return {
+          phase: session.phase,
+          phaseLabel: PHASE_LABELS[session.phase] || 'discovery',
+          fileKey: args.fileKey,
+          _stopBuild: true,
+          _noDesignSystem: true,
+          discovery: { variables: { cached: 0 }, textStyles: { cached: 0 }, components: { cached: 0 } },
+          _userPrompt:
+            `No design system found on this file.\n\n` +
+            `Mimic builds only from a design system's components, styles, and variables — ` +
+            `it never falls back to raw values or hand-built elements. Before building:\n` +
+            `• Enable the design-system library on this file (Assets panel → Libraries), or\n` +
+            `• Open the file that has the DS enabled, or\n` +
+            `• If this is a community library the plugin can't read, re-call with skipRestApi: true ` +
+            `and supply components/variables via Figma MCP search_design_system.\n\n` +
+            `Then re-run discovery.`,
+          hint: 'STOP — no design system discovered on this file. Present _userPrompt to the user. Mimic cannot build without a DS.',
+        };
+      }
 
       // ── Library identity drift + claim-by-evidence (spec §3.2/§3.4) ──
       // Runs once component discovery has populated the live cache, so

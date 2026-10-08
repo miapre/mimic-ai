@@ -68,4 +68,33 @@ describe('FigmaRest', () => {
     assert.deepEqual(rest.parseStylesResponse({ meta: {} }), []);
     assert.deepEqual(rest.parseStylesResponse({ meta: { styles: [] } }), []);
   });
+
+  it('resolveLibraryFileKey returns meta.file_key from a component_set key', async () => {
+    const rest = new FigmaRest('figd_test');
+    const paths = [];
+    rest._get = async (p) => { paths.push(p); return { meta: { file_key: 'LIBKEY123' } }; };
+    const fk = await rest.resolveLibraryFileKey('setkey');
+    assert.equal(fk, 'LIBKEY123');
+    assert.equal(paths[0], '/component_sets/setkey', 'tries component_sets first');
+  });
+
+  it('resolveLibraryFileKey falls through component_sets -> components -> styles on 404', async () => {
+    const rest = new FigmaRest('figd_test');
+    const tried = [];
+    rest._get = async (p) => {
+      tried.push(p);
+      if (p.startsWith('/styles/')) return { meta: { file_key: 'FROM_STYLE' } };
+      throw new Error('FIGMA_NOT_FOUND: nope');
+    };
+    const fk = await rest.resolveLibraryFileKey('k');
+    assert.equal(fk, 'FROM_STYLE');
+    assert.deepEqual(tried, ['/component_sets/k', '/components/k', '/styles/k']);
+  });
+
+  it('resolveLibraryFileKey returns null when nothing resolves or key is falsy', async () => {
+    const rest = new FigmaRest('figd_test');
+    rest._get = async () => { throw new Error('FIGMA_NOT_FOUND'); };
+    assert.equal(await rest.resolveLibraryFileKey('k'), null);
+    assert.equal(await rest.resolveLibraryFileKey(''), null);
+  });
 });

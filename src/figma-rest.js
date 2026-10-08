@@ -108,6 +108,31 @@ class FigmaRest {
     };
   }
 
+  /**
+   * Resolve the library file key that a published component/style key lives
+   * in. Figma's /component_sets/{key}, /components/{key} and /styles/{key}
+   * responses all carry meta.file_key. This lets discovery find a library's
+   * file key automatically from any published key already present on the page,
+   * so a single-library file never has to prompt for it. Returns null when the
+   * key can't be resolved (deleted, inaccessible, or local/non-published).
+   */
+  async resolveLibraryFileKey(publishedKey) {
+    if (!publishedKey) return null;
+    const endpoints = [
+      `/component_sets/${publishedKey}`,
+      `/components/${publishedKey}`,
+      `/styles/${publishedKey}`,
+    ];
+    for (const ep of endpoints) {
+      try {
+        const raw = await this._get(ep);
+        const fk = raw && raw.meta && raw.meta.file_key;
+        if (fk) return fk;
+      } catch (e) { /* try the next endpoint */ }
+    }
+    return null;
+  }
+
   /** Parse the /components response into a flat array */
   parseComponentsResponse(raw) {
     const components = raw?.meta?.components;
