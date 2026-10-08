@@ -97,6 +97,25 @@ class DsDiscovery {
   }
 
   /**
+   * True when the knowledge store has recorded that this component key was
+   * removed from the live DS. The ds cache can lag behind the library and
+   * still hold a removed component; a prior build's staleness pass flags it
+   * `component_removed`. We must never surface such a key from mapping —
+   * recommending it makes mimic_map_components point at a dead component and
+   * the component-first gate then rejects primitives in favour of a key that
+   * fails to import. Lets the element fall through to the search / gap path.
+   */
+  _isRemovedKey(key) {
+    const components = this.knowledgeStore?.data?.components || {};
+    const isRemoved = (recipe) => Boolean(recipe && recipe.stale && recipe.staleReason === 'component_removed');
+    if (isRemoved(components[key])) return true;
+    for (const recipe of Object.values(components)) {
+      if (recipe.componentKey === key && isRemoved(recipe)) return true;
+    }
+    return false;
+  }
+
+  /**
    * Search for a DS component matching the given element type. Implements
    * the schema v3 §5.3 precedence (fixes findings E/1 — the old
    * knowledge-first substring loop over hex-keyed store entries is deleted,
@@ -193,6 +212,11 @@ class DsDiscovery {
       const name = (component.name || '').toLowerCase();
       const frame = (component.containingFrame || '').toLowerCase();
       if (searchTerms.some(term => name.includes(term))) {
+        // Never surface a component the knowledge store already knows was
+        // removed from the live DS (see _isRemovedKey). Skip it entirely so a
+        // stale cache entry can't be recommended as a live component.
+        if (this._isRemovedKey(key)) continue;
+
         // Score: higher = better match
         let score = 0;
 

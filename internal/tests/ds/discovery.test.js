@@ -199,3 +199,39 @@ describe('DsDiscovery.searchComponent', () => {
     assert.equal(result.componentKey, 'right-lib-key');
   });
 });
+
+describe('DsDiscovery.searchComponent — removed component keys', () => {
+  it('does not surface a ds-cache component whose key is flagged component_removed', () => {
+    const cache = new DsCache();
+    cache.addComponent('card-header-removed', {
+      name: 'Card header', libraryKey: 'lib-1', isComponentSet: true,
+    });
+    const ks = makeKnowledgeStore({
+      'card-header-removed': {
+        componentKey: 'card-header-removed', names: ['Card header'],
+        stale: true, staleReason: 'component_removed',
+      },
+    });
+    const discovery = new DsDiscovery(null, cache, ks);
+    discovery.setLibrary('lib-1');
+    const result = discovery.searchComponent('card');
+    assert.equal(result.found, false, 'a removed component key must never be served');
+  });
+
+  it('prefers a live component over a removed one with the same name', () => {
+    const cache = new DsCache();
+    cache.addComponent('badge-removed', { name: 'Badge', libraryKey: 'lib-1', isComponentSet: true });
+    cache.addComponent('badge-live', { name: 'Badge', libraryKey: 'lib-1', isComponentSet: true });
+    const ks = makeKnowledgeStore({
+      'badge-removed': {
+        componentKey: 'badge-removed', names: ['Badge'],
+        stale: true, staleReason: 'component_removed',
+      },
+    });
+    const discovery = new DsDiscovery(null, cache, ks);
+    discovery.setLibrary('lib-1');
+    const result = discovery.searchComponent('badge');
+    assert.equal(result.found, true);
+    assert.equal(result.componentKey, 'badge-live', 'the live key must win over the removed one');
+  });
+});
