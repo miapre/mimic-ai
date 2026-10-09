@@ -1438,6 +1438,51 @@ function register(server, context) {
         };
       }
 
+      // ── REST-authoritative completion (auto-satisfy the community check) ──
+      // The community-library check exists to catch community libraries the
+      // plugin/REST path could not enumerate — and it depends on the Figma
+      // `search_design_system` MCP, which is NOT installed in every
+      // environment. When the selected library was reached directly over REST
+      // (its file key is resolved AND a REST client is present), that
+      // enumeration is authoritative for the selected library, so the check is
+      // redundant — exactly as it is when args.libraryKey is supplied (see the
+      // branch above, which also skips it). Completing here instead of stalling
+      // at Phase 1 is what keeps discovery working on setups without the Figma
+      // MCP; previously it got stuck here and the agent limped on a stale
+      // component cache (the root cause of the zero-component build). Multiple
+      // enabled libraries are already handled by the multi-library gate far
+      // above, so by this point a single library is selected.
+      if (libraryFileKey && figmaRest && !args.communitySearchResults) {
+        session.pendingCommunityCheck = false;
+        advancePhase(2);
+        return {
+          phase: session.phase,
+          phaseLabel: PHASE_LABELS[session.phase],
+          fileKey: args.fileKey,
+          library: libraryInfo,
+          selectedLibraryKey: session.selectedLibraryKey || null,
+          discoveredLibraries: varDiscovery.libraries || [],
+          discovery: {
+            variables: { cached: variablesCached, preloaded: variablesPreloaded },
+            textStyles: { cached: stylesCached },
+            components: { cached: componentsCached },
+          },
+          enforcement: session.enforcementProfile,
+          completenessWarnings,
+          dsChanges: dsChanges.length > 0 ? dsChanges : undefined,
+          fingerprintFresh,
+          _restFetchSkipped: fingerprintFreshRest || undefined,
+          _learningStatus: learningStatus,
+          _communityCheckSkipped: 'REST enumeration of the selected library is authoritative; the Figma search_design_system community check was auto-satisfied (no Figma MCP needed).',
+          _libraryConstraint: `ALL components and Figma MCP searches must use ONLY "${session.selectedLibraryKey}". Never mix design systems.`,
+          hint: (dsChanges.length > 0 ? `DS UPDATED: ${dsChanges.join(' | ')}. ` : '')
+            + `Discovery complete (REST-authoritative; community check auto-satisfied). `
+            + `${variablesCached} variables, ${stylesCached} text styles, ${componentsCached} components. `
+            + `Selected library: "${session.selectedLibraryKey}" — use ONLY this library for all components and searches. `
+            + `NEXT: Call mimic_map_components with ALL section-level elements in your design. Target ~90% component usage.`,
+        };
+      }
+
       // ── Stay at Phase 1 — community library check required ──
       advancePhase(1);
 
