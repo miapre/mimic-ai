@@ -44,6 +44,31 @@ class DsCache {
   getVariable(path) { return this.variables.get(path) || null; }
   addComponent(key, component) { this.components.set(key, component); }
   getComponent(key) { return this.components.get(key) || null; }
+
+  /**
+   * Number of components discovered via the REST API — i.e. an authoritative
+   * full-library enumeration. Components from other sources (plugin page-scan,
+   * learned recipes, library-search ingestion) carry a different `source`.
+   */
+  restComponentCount() {
+    let n = 0;
+    for (const c of this.components.values()) {
+      if (c && c.source === 'rest_api') n++;
+    }
+    return n;
+  }
+
+  /**
+   * True when the component set Mimic knows was NOT enumerated from the live
+   * library — the cache holds components but none came from the REST API and
+   * no library file key was available to run one. In that state Mimic only
+   * knows components already instantiated on the file (page-scan), so
+   * mimic_map_components reports false gaps and a build can silently use few or
+   * zero DS components. Callers should warn (not silently proceed).
+   */
+  componentEnumerationDegraded(libraryFileKey) {
+    return this.components.size > 0 && this.restComponentCount() === 0 && !libraryFileKey;
+  }
   markFailed(key, permanent = true) {
     this.failedKeys.set(key, { timestamp: Date.now(), permanent });
   }

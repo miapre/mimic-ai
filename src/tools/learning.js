@@ -996,9 +996,14 @@ function register(server, context) {
       // failing. A build with a failing gate is never "all good", regardless
       // of what else is (or isn't) in this array.
       if (zeroComponentBuild) {
+        const degradedConfirmed = session?.componentEnumerationDegraded
+          ? `Discovery this session WAS degraded — component enumeration was page-scan only (no REST/token), ` +
+            `so the full component library was never read. That is the confirmed cause. `
+          : '';
         recommendations.push(
           `**Component-first quality gate failed — zero DS components used.** This build placed ` +
           `${totalInstances} component instances across ${primitives.length} primitive type(s). ` +
+          degradedConfirmed +
           `Mimic exists to build with DS components; a componentless result means component ` +
           `discovery was degraded, not that the DS had nothing to offer. Check: (1) FIGMA_TOKEN is ` +
           `set and unexpired, (2) the Figma \`search_design_system\` MCP is connected, (3) the ` +

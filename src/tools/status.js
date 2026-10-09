@@ -1289,6 +1289,29 @@ function register(server, context) {
         completenessWarnings.push('No components discovered \u2014 library file key not provided.');
       }
 
+      // Component enumeration health. When no components were read via the REST
+      // API (no FIGMA_TOKEN / library file key) the only components Mimic knows
+      // are the ones already instantiated on this file (page-scan) plus learned
+      // recipes \u2014 the full component library was never enumerated. That is a
+      // DEGRADED state: mimic_map_components will report false gaps and a build
+      // can silently end up using few or zero DS components. Surface it loudly
+      // (agents are instructed to read completenessWarnings) and flag the
+      // session so the build report can name it as the confirmed cause of a
+      // zero-component build. Non-fatal: the documented no-token \u2192 primitives
+      // fallback still works, it just must be an informed choice.
+      const componentEnumerationDegraded = dsCache.componentEnumerationDegraded(libraryFileKey);
+      session.componentEnumerationDegraded = componentEnumerationDegraded;
+      if (componentEnumerationDegraded) {
+        completenessWarnings.push(
+          'Component enumeration is PAGE-SCAN ONLY \u2014 the full component library was not read '
+          + '(no FIGMA_TOKEN / library file key for REST discovery). Only components already placed '
+          + 'on this file are known, so mimic_map_components may report false gaps and a build can '
+          + 'end up using few or no DS components. Provide a library file key / FIGMA_TOKEN, or run a '
+          + 'Figma search_design_system library search, before building \u2014 a zero-component build '
+          + 'fails the component-first quality gate.'
+        );
+      }
+
       session.toolCallCount++;
 
       // If libraryKey was provided, the user already resolved the multi-library

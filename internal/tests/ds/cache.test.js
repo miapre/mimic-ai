@@ -71,4 +71,34 @@ describe('DsCache', () => {
     assert.equal(cache.resolveTextStyleKey(null), null);
     assert.equal(cache.resolveTextStyleKey(undefined), null);
   });
+
+  it('restComponentCount counts only rest_api-sourced components', () => {
+    const cache = new DsCache();
+    cache.addComponent('a', { name: 'Button', source: 'rest_api' });
+    cache.addComponent('b', { name: 'Badge', source: 'page_scan' });
+    cache.addComponent('c', { name: 'Card', source: 'rest_api' });
+    cache.addComponent('d', { name: 'Icon' }); // no source
+    assert.equal(cache.restComponentCount(), 2);
+  });
+
+  it('componentEnumerationDegraded: true when cache is page-scan-only and no library file key', () => {
+    const cache = new DsCache();
+    cache.addComponent('b', { name: 'Badge', source: 'page_scan' });
+    assert.equal(cache.componentEnumerationDegraded(null), true);
+  });
+
+  it('componentEnumerationDegraded: false once a library file key enabled REST enumeration', () => {
+    const cache = new DsCache();
+    cache.addComponent('a', { name: 'Button', source: 'rest_api' });
+    assert.equal(cache.componentEnumerationDegraded('lib-file-key'), false);
+    // also false when a key is present even if cache is page-scan (REST was attempted)
+    const cache2 = new DsCache();
+    cache2.addComponent('b', { name: 'Badge', source: 'page_scan' });
+    assert.equal(cache2.componentEnumerationDegraded('lib-file-key'), false);
+  });
+
+  it('componentEnumerationDegraded: false for an empty cache (nothing to be wrong about yet)', () => {
+    const cache = new DsCache();
+    assert.equal(cache.componentEnumerationDegraded(null), false);
+  });
 });
