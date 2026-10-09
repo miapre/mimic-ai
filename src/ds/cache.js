@@ -156,10 +156,20 @@ class DsCache {
         //   - bg-* used as fillVariable on text nodes (should be text-*)
         //   - fg-* used as fillVariable on frames (should be bg-*)
         if (expectedCategory && cached.category && cached.category !== expectedCategory) {
+          // A hairline rectangle used as a divider/separator legitimately takes
+          // a border-* color as its fill — there is no "divider" fill category,
+          // and border-* IS the correct divider color. Don't flag border-as-fill
+          // on a 1-2px line (callers were even told to "auto-correct" it to a
+          // bg-* color, which would be wrong).
+          const w = Number(args.width);
+          const h = Number(args.height);
+          const isThinLine = (Number.isFinite(w) && w > 0 && w <= 2)
+            || (Number.isFinite(h) && h > 0 && h <= 2);
           // Allow 'color' (generic) and 'foreground' for fills — these are ambiguous
           const isAmbiguous = cached.category === 'color'
             || (expectedCategory === 'background' && cached.category === 'foreground')
-            || (expectedCategory === 'text' && cached.category === 'foreground');
+            || (expectedCategory === 'text' && cached.category === 'foreground')
+            || (expectedCategory === 'background' && cached.category === 'border' && isThinLine);
           if (!isAmbiguous) {
             const CATEGORY_LABELS = {
               text: 'text-*',

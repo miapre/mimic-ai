@@ -101,4 +101,26 @@ describe('DsCache', () => {
     const cache = new DsCache();
     assert.equal(cache.componentEnumerationDegraded(null), false);
   });
+
+  it('validateVariables does NOT flag a border-* fill on a 1px horizontal divider', () => {
+    const cache = new DsCache();
+    cache.addVariable('Colors/Border/border-tertiary', { key: 'b1', category: 'border' });
+    const res = cache.validateVariables({ shape: 'rectangle', height: 1, fillVariable: 'Colors/Border/border-tertiary' });
+    assert.equal((res.categoryMismatches || []).length, 0, 'a hairline divider fill is legitimate');
+    assert.equal((res.categoryMismatchDetails || []).length, 0);
+  });
+
+  it('validateVariables does NOT flag a border-* fill on a 1px vertical divider', () => {
+    const cache = new DsCache();
+    cache.addVariable('Colors/Border/border-secondary', { key: 'b2', category: 'border' });
+    const res = cache.validateVariables({ shape: 'rectangle', width: 1, fillVariable: 'Colors/Border/border-secondary' });
+    assert.equal((res.categoryMismatches || []).length, 0);
+  });
+
+  it('validateVariables STILL flags a border-* fill on a normal-sized surface', () => {
+    const cache = new DsCache();
+    cache.addVariable('Colors/Border/border-tertiary', { key: 'b1', category: 'border' });
+    const res = cache.validateVariables({ width: 200, height: 100, fillVariable: 'Colors/Border/border-tertiary' });
+    assert.equal((res.categoryMismatches || []).length, 1, 'border-as-fill on a real surface is still a mismatch');
+  });
 });

@@ -1051,8 +1051,9 @@ function register(server, context) {
       if (categoryMismatches.length > 0) {
         const uniqueMismatches = [...new Set(categoryMismatches)].slice(0, 5);
         recommendations.push(
-          `**Variable category mismatches:** ${uniqueMismatches.length} instance(s) where a variable was used outside its semantic category (e.g., bg-* for strokes instead of border-*). ` +
-          `This was auto-corrected during the build.`
+          `**Variable category mismatches:** ${uniqueMismatches.length} binding(s) used a variable outside its semantic category (e.g., a bg-* variable as a stroke instead of border-*). ` +
+          `These were FLAGGED, not changed — the binding was applied exactly as requested. Review and rebind to the correct category: border-* for strokes, bg-* for fills, text-* for text, fg-* for icons. ` +
+          `(Hairline dividers that use a border-* color as fill are exempt and are not counted here.)`
         );
       }
 
