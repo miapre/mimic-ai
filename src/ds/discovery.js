@@ -201,56 +201,69 @@ class DsDiscovery {
     // The key problem: REST API returns 5000+ components (icons + UI components)
     // and name.includes() matches icons whose names happen to contain the term.
     // Scoring ensures UI component sets rank above individual icon components.
+    // Identity match: the term IS the final "/" segment of a name/frame,
+    // tolerating a trailing plural ("buttons" ~ "button"). This is the
+    // component-SET identity — the single strongest signal that a REST variant
+    // belongs to the set the caller asked for.
+    const identityMatch = (s) => {
+      if (!s) return false;
+      const last = s.split('/').pop().trim();
+      return searchTerms.some(term => last === term || last === `${term}s` || last.replace(/s$/, '') === term);
+    };
+
     const matches = [];
     for (const [key, component] of this.dsCache.components) {
       const name = (component.name || '').toLowerCase();
       const frame = (component.containingFrame || '').toLowerCase();
-      if (searchTerms.some(term => name.includes(term))) {
-        // Never surface a component the knowledge store already knows was
-        // removed from the live DS (see _isRemovedKey). Skip it entirely so a
-        // stale cache entry can't be recommended as a live component.
-        if (this._isRemovedKey(key)) continue;
 
-        // Score: higher = better match
-        let score = 0;
+      // Candidate gate: the term may appear in the component NAME or in its
+      // CONTAINING FRAME (the set identity). REST caches each variant under its
+      // variant-property name (e.g. "Size=md, Hierarchy=Primary"), which does
+      // NOT contain the set's base word — so a name-only gate misses the real
+      // "Button" variants entirely and admits only coincidental matches like
+      // "Radio button w/ file upload" or a "Badge=False" variant property.
+      // Including the frame is what lets the correct set win.
+      const nameMatch = searchTerms.some(term => name.includes(term));
+      const frameMatch = searchTerms.some(term => frame.includes(term));
+      if (!nameMatch && !frameMatch) continue;
 
-        // Tier 1: Is it a known component set? (from Figma MCP search or plugin)
-        if (component.isComponentSet) score += 100;
+      // Never surface a component the knowledge store knows was removed.
+      if (this._isRemovedKey(key)) continue;
 
-        // Tier 2: Infer component set from naming patterns.
-        // Real UI components have structured names: "Buttons/Button", "Input field",
-        // "Table cell", "Badge". Icons have short lowercase names: "help-octagon",
-        // "chevron-selector-vertical", "filter-lines", "menu-04".
-        const hasSlash = name.includes('/');
-        const hasSpace = name.includes(' ');
-        const hasEquals = name.includes('=');   // variant syntax: "Size=md, Type=Default"
-        const looksLikeIcon = !hasSlash && !hasSpace && !hasEquals && /^[a-z0-9-]+$/.test(name);
-        if (hasEquals) score += 80;             // variant syntax = definitely a component set variant
-        if (hasSlash) score += 60;              // "Buttons/Button" = structured name
-        if (hasSpace && !looksLikeIcon) score += 40; // "Input field", "Table cell"
-        if (looksLikeIcon) score -= 50;         // "help-octagon", "filter-lines" = likely icon
+      let score = 0;
 
-        // Tier 3: Exact name match vs substring match.
-        // "Badge" matching component named "Badge" >> "Badge" matching "check-verified-badge-02"
-        const exactMatch = searchTerms.some(term => {
-          // Exact match: name IS the term, or final segment after "/" is the term
-          const segments = name.split('/');
-          const lastName = segments[segments.length - 1].trim();
-          return lastName === term || name === term;
-        });
-        if (exactMatch) score += 50;
+      // Tier 1: known component set (plugin/Figma MCP).
+      if (component.isComponentSet) score += 100;
 
-        // Tier 4: containingFrame hints (REST API provides this).
-        // A component inside "Buttons" frame is likely a Button variant.
-        if (frame && searchTerms.some(term => frame.includes(term))) score += 30;
+      // Tier 2: structured-name heuristics (real component vs icon).
+      const hasSlash = name.includes('/');
+      const hasSpace = name.includes(' ');
+      const hasEquals = name.includes('=');   // variant syntax: "Size=md, Type=Default"
+      const looksLikeIcon = !hasSlash && !hasSpace && !hasEquals && /^[a-z0-9-]+$/.test(name);
+      if (hasEquals) score += 80;
+      if (hasSlash) score += 60;
+      if (hasSpace && !looksLikeIcon) score += 40;
+      if (looksLikeIcon) score -= 50;
 
-        // Spec §5.3 tier 3 additions:
-        if (this.dsCache.hasFailed && this.dsCache.hasFailed(key)) score -= 100;
-        const usageBoost = Math.min(this._instancesForComponentKey(key), 20);
-        score += usageBoost;
+      // Tier 3: component-SET identity. A variant whose containing frame is (or
+      // ends in) the term belongs to the right set — decisive. A direct name
+      // identity (name IS the term) is the classic exact match.
+      const frameIdentity = identityMatch(frame);
+      const nameIdentity = identityMatch(name);
+      if (frameIdentity) score += 120;
+      else if (frameMatch) score += 30;       // term appears somewhere in the frame, weaker
+      if (nameIdentity) score += 50;
 
-        matches.push({ key, component, score });
-      }
+      // Tier 4: coincidental-match damping. The term is only a loose substring
+      // of the NAME (often a variant VALUE or property, e.g. "Badge=False"),
+      // with no set-identity signal from either name or frame — almost always
+      // an unrelated component. Pull it below genuine set variants.
+      if (nameMatch && !nameIdentity && !frameIdentity) score -= 60;
+
+      if (this.dsCache.hasFailed && this.dsCache.hasFailed(key)) score -= 100;
+      score += Math.min(this._instancesForComponentKey(key), 20);
+
+      matches.push({ key, component, score });
     }
     // Sort by score descending
     matches.sort((a, b) => b.score - a.score);

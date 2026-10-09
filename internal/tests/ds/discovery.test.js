@@ -218,6 +218,32 @@ describe('DsDiscovery.searchComponent — removed component keys', () => {
     assert.equal(result.found, false, 'a removed component key must never be served');
   });
 
+  it('prefers the real set variant (frame identity) over a coincidental name match', () => {
+    const cache = new DsCache();
+    // Real Button: REST caches the variant under its variant-property name
+    // (no "button" in it); the set identity lives in containingFrame.
+    cache.addComponent('real-btn', { name: 'Size=md, Hierarchy=Primary, State=Default', containingFrame: 'Button', libraryKey: 'lib' });
+    // Coincidental: a radio/file-upload variant whose NAME contains "button".
+    cache.addComponent('radio-btn', { name: 'Selected=True, Type=Radio button w/ file upload', containingFrame: 'Checkboxes and radios', libraryKey: 'lib' });
+    const d = new DsDiscovery(null, cache, makeKnowledgeStore());
+    d.setLibrary('lib');
+    const r = d.searchComponent('button');
+    assert.equal(r.found, true);
+    assert.equal(r.componentKey, 'real-btn', 'frame identity must beat a coincidental name hit');
+  });
+
+  it('does not pick a variant-property coincidence ("Badge=False") over the real Badge set', () => {
+    const cache = new DsCache();
+    // A form-field whose NAME contains the word "badge" only as a variant property.
+    cache.addComponent('label-field', { name: 'Size=sm, Actions=False, Badge=False', containingFrame: 'Input field', libraryKey: 'lib' });
+    // The real Badge: the word is nowhere in the variant name, only in the frame.
+    cache.addComponent('real-badge', { name: 'Color=Gray, Size=sm', containingFrame: 'Badge', libraryKey: 'lib' });
+    const d = new DsDiscovery(null, cache, makeKnowledgeStore());
+    d.setLibrary('lib');
+    const r = d.searchComponent('badge');
+    assert.equal(r.componentKey, 'real-badge', 'the real Badge set must win over a Badge=False variant property');
+  });
+
   it('prefers a live component over a removed one with the same name', () => {
     const cache = new DsCache();
     cache.addComponent('badge-removed', { name: 'Badge', libraryKey: 'lib-1', isComponentSet: true });
