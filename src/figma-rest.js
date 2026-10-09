@@ -92,6 +92,26 @@ class FigmaRest {
     return this.parseStylesResponse(raw);
   }
 
+  /**
+   * Discover text styles, falling back from the (optional) library file to the
+   * working file. Text styles are frequently defined in the working file
+   * itself rather than a separate published library file, so discovering only
+   * from libraryFileKey leaves enforceTextStyles:true with zero styles cached
+   * (the plugin then has no textStyleId to bind). Trying the working file as a
+   * fallback auto-loads them. Each fetch is isolated so a failure on one key
+   * can't mask styles reachable via the other.
+   */
+  async getTextStylesWithFallback(libraryFileKey, workingFileKey) {
+    let styles = [];
+    if (libraryFileKey) {
+      try { styles = await this.getFileTextStyles(libraryFileKey); } catch (_) { /* try fallback */ }
+    }
+    if ((!styles || styles.length === 0) && workingFileKey && workingFileKey !== libraryFileKey) {
+      try { styles = await this.getFileTextStyles(workingFileKey); } catch (_) { /* non-fatal */ }
+    }
+    return styles || [];
+  }
+
   /** Get all published FILL styles (color styles) from a file */
   async getFileFillStyles(fileKey) {
     const raw = await this._get(`/files/${fileKey}/styles`);

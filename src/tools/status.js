@@ -1013,9 +1013,12 @@ function register(server, context) {
           }
         }
 
-        // Text styles
+        // Text styles. Fall back to the working file (args.fileKey) when the
+        // library file publishes none — text styles commonly live in the
+        // working file itself, and skipping them leaves enforceTextStyles:true
+        // with zero styles cached (no textStyleId for the plugin to bind).
         try {
-          const restStyles = await figmaRest.getFileTextStyles(libraryFileKey);
+          const restStyles = await figmaRest.getTextStylesWithFallback(libraryFileKey, args.fileKey);
           if (restStyles.length > 0) {
             const styleKeys = restStyles.map(s => s.key);
             try {

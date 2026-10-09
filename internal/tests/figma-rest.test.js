@@ -98,3 +98,56 @@ describe('FigmaRest', () => {
     assert.equal(await rest.resolveLibraryFileKey(''), null);
   });
 });
+
+describe('FigmaRest.getTextStylesWithFallback', () => {
+  it('falls back to the working file when the library file publishes no text styles', async () => {
+    const rest = new FigmaRest('figd_test');
+    const calls = [];
+    rest.getFileTextStyles = async (fileKey) => {
+      calls.push(fileKey);
+      return fileKey === 'working-file' ? [{ key: 's1', name: 'Text sm' }] : [];
+    };
+    const styles = await rest.getTextStylesWithFallback('library-file', 'working-file');
+    assert.deepEqual(calls, ['library-file', 'working-file'], 'tries library first, then working file');
+    assert.equal(styles.length, 1);
+    assert.equal(styles[0].key, 's1');
+  });
+
+  it('uses library-file styles and never hits the working file when present', async () => {
+    const rest = new FigmaRest('figd_test');
+    const calls = [];
+    rest.getFileTextStyles = async (fileKey) => { calls.push(fileKey); return [{ key: 'lib1', name: 'Display sm' }]; };
+    const styles = await rest.getTextStylesWithFallback('library-file', 'working-file');
+    assert.deepEqual(calls, ['library-file']);
+    assert.equal(styles[0].key, 'lib1');
+  });
+
+  it('survives a throwing library fetch and still returns working-file styles', async () => {
+    const rest = new FigmaRest('figd_test');
+    rest.getFileTextStyles = async (fileKey) => {
+      if (fileKey === 'library-file') throw new Error('403');
+      return [{ key: 'w1', name: 'Text md' }];
+    };
+    const styles = await rest.getTextStylesWithFallback('library-file', 'working-file');
+    assert.equal(styles.length, 1);
+    assert.equal(styles[0].key, 'w1');
+  });
+
+  it('does not double-fetch when library and working keys are identical', async () => {
+    const rest = new FigmaRest('figd_test');
+    const calls = [];
+    rest.getFileTextStyles = async (fileKey) => { calls.push(fileKey); return []; };
+    const styles = await rest.getTextStylesWithFallback('same', 'same');
+    assert.deepEqual(calls, ['same']);
+    assert.equal(styles.length, 0);
+  });
+
+  it('discovers from the working file even with no library file key', async () => {
+    const rest = new FigmaRest('figd_test');
+    const calls = [];
+    rest.getFileTextStyles = async (fileKey) => { calls.push(fileKey); return [{ key: 'w2', name: 'Text lg' }]; };
+    const styles = await rest.getTextStylesWithFallback(null, 'working-file');
+    assert.deepEqual(calls, ['working-file']);
+    assert.equal(styles[0].key, 'w2');
+  });
+});
