@@ -201,14 +201,18 @@ class DsDiscovery {
     // The key problem: REST API returns 5000+ components (icons + UI components)
     // and name.includes() matches icons whose names happen to contain the term.
     // Scoring ensures UI component sets rank above individual icon components.
-    // Identity match: the term IS the final "/" segment of a name/frame,
-    // tolerating a trailing plural ("buttons" ~ "button"). This is the
-    // component-SET identity — the single strongest signal that a REST variant
-    // belongs to the set the caller asked for.
+    // Identity match: the term IS (or leads) the final "/" segment of a
+    // name/frame, tolerating a trailing plural ("buttons" ~ "button") and a
+    // multi-word set name where the term is the leading word ("Table cell" ~
+    // "table", "Card header" ~ "card"). This is the component-SET identity —
+    // the single strongest signal that a REST variant belongs to the set the
+    // caller asked for.
     const identityMatch = (s) => {
       if (!s) return false;
       const last = s.split('/').pop().trim();
-      return searchTerms.some(term => last === term || last === `${term}s` || last.replace(/s$/, '') === term);
+      return searchTerms.some(term =>
+        last === term || last === `${term}s` || last.replace(/s$/, '') === term
+        || last.startsWith(`${term} `) || last.startsWith(`${term}s `));
     };
 
     const matches = [];
@@ -330,7 +334,7 @@ class DsDiscovery {
       'tab': ['tabs', 'tab bar', 'tab group'],
       'badge': ['tag', 'chip', 'pill', 'label'],
       'card': ['tile', 'panel'],
-      'table': ['data table', 'grid', 'list'],
+      'table': ['data table', 'grid'],
       'pagination': ['pager', 'page nav'],
       'header': ['nav', 'navigation', 'top bar', 'app bar', 'navbar'],
       'footer': ['bottom bar', 'footer nav', 'footer navigation', 'site footer', 'page footer'],

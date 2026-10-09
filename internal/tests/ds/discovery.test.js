@@ -244,6 +244,17 @@ describe('DsDiscovery.searchComponent — removed component keys', () => {
     assert.equal(r.componentKey, 'real-badge', 'the real Badge set must win over a Badge=False variant property');
   });
 
+  it('"table" resolves to the Table cell set (leading-word identity), not a List component', () => {
+    const cache = new DsCache();
+    cache.addComponent('table-cell', { name: 'Style=Text', containingFrame: 'Table cell', libraryKey: 'lib' });
+    cache.addComponent('list-item', { name: 'Type=Default', containingFrame: 'List', libraryKey: 'lib' });
+    const d = new DsDiscovery(null, cache, makeKnowledgeStore());
+    d.setLibrary('lib');
+    const r = d.searchComponent('table');
+    assert.equal(r.found, true);
+    assert.equal(r.componentKey, 'table-cell', 'leading-word identity "Table cell" ~ "table"; List is no longer a table alias');
+  });
+
   it('prefers a live component over a removed one with the same name', () => {
     const cache = new DsCache();
     cache.addComponent('badge-removed', { name: 'Badge', libraryKey: 'lib-1', isComponentSet: true });
