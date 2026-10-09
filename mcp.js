@@ -9,6 +9,7 @@ const { DsResolver } = require('./src/ds/resolver');
 const { KnowledgeStore } = require('./src/knowledge/store');
 const { BuildManifest } = require('./src/knowledge/manifest');
 const { FigmaRest } = require('./src/figma-rest');
+const { recordBuildLimitHit } = require('./src/utils/build-limit');
 const path = require('node:path');
 const os = require('node:os');
 const fs = require('node:fs');
@@ -540,12 +541,17 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     };
   }
 
-  // Circuit breaker: max tool calls in Phase 3 before forced stop
+  // Circuit breaker: max tool calls in Phase 3 before forced stop.
+  // The report resets phaseToolCalls[3], so episodes are tracked cumulatively
+  // (recordBuildLimitHit) to escalate on repeats instead of granting a free
+  // reset every time the cap is re-hit.
   if (session.phase === 3 && session.phaseToolCalls[3] >= MAX_PHASE3_CALLS_BEFORE_STOP && !EXEMPT_TOOLS.has(name)) {
+    const limit = recordBuildLimitHit(session, MAX_PHASE3_CALLS_BEFORE_STOP);
     return {
       content: [{ type: 'text', text: JSON.stringify({
-        error: 'BUILD_LIMIT_REACHED',
-        message: `${MAX_PHASE3_CALLS_BEFORE_STOP} tool calls in build phase. This build is too large or stuck. Generate the report with mimic_generate_build_report and assess what was built so far.`,
+        error: limit.error,
+        buildLimitHits: limit.buildLimitHits,
+        message: limit.message,
         toolCallCount: session.toolCallCount,
         phaseToolCalls: session.phaseToolCalls[3],
       }) }],

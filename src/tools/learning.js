@@ -7,6 +7,7 @@ const { ChartCalculator } = require('../charts/calculator');
 const { PatternMatcher } = require('../knowledge/patterns');
 const { compileNoGoods } = require('../knowledge/compiler');
 const { wordBoundaryMatch } = require('../utils/text-match');
+const { clearBuildLimitEpisode } = require('../utils/build-limit');
 
 // ── Invented example values for _chartColorHint ──────────────────────────
 // Used ONLY when the DS cache has no match for a given field — i.e. before
@@ -573,6 +574,11 @@ function register(server, context) {
       if (phase3Ops > 0) {
         knowledgeStore.incrementBuildCount();
         session.phaseToolCalls[3] = 0;
+        // End the current build-limit episode: the next time the Phase-3 cap
+        // trips it counts as a fresh episode (and escalates). The cumulative
+        // buildLimitHits counter is intentionally NOT reset — repeated caps in
+        // one session must keep escalating rather than silently resetting.
+        clearBuildLimitEpisode(session);
       }
       // ── Pattern demotion from in-build corrections (spec acceptance
       // criterion 17) ── build.js's figma_create_frame tracked, per prefix,
