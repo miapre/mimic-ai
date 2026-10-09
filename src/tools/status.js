@@ -1572,7 +1572,12 @@ function register(server, context) {
         _learningStatus: learningStatus,
         communityLibraryCheckRequired: true,
         _stopBuild: true,
-        hint: `Plugin discovery complete — ${variablesCached} variables, ${stylesCached} text styles, ${componentsCached} components cached. MANDATORY NEXT STEP: Call Figma MCP search_design_system with query "color", includeVariables: true, includeComponents: false, includeStyles: false on fileKey "${args.fileKey}". Collect all unique non-null libraryName values from the results, then re-call mimic_discover_ds with communitySearchResults set to that array. Build tools are BLOCKED until this check completes.`,
+        _howToComplete: {
+          preferred: 'Re-run mimic_discover_ds with a resolvable library file key (libraryFileKey) and a valid FIGMA_TOKEN so the selected library is enumerated over REST — discovery then auto-completes to build-ready, no Figma MCP required.',
+          alternative: 'If this is a community library REST cannot read AND a Figma MCP that exposes search_design_system is installed, call it (query "color", includeVariables: true) and re-call mimic_discover_ds with communitySearchResults.',
+          note: 'search_design_system is NOT part of the official Figma MCP server. If no tool exposes it in this environment, use the preferred REST path — do not block waiting on a tool that may not exist.',
+        },
+        hint: `Plugin discovery reached ${componentsCached} component(s) (page-scan) + ${variablesCached} variables, ${stylesCached} text styles. To finish discovery and enumerate the FULL library, re-run mimic_discover_ds with a library file key + FIGMA_TOKEN so REST enumeration runs (it then auto-completes to build-ready — no Figma MCP needed). Only if this is a community library REST cannot read AND a Figma MCP exposing search_design_system is installed, use that + communitySearchResults. Do not block indefinitely on an MCP that may not exist in this environment.`,
       };
     },
     {
