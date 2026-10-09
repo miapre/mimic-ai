@@ -216,6 +216,32 @@ function register(server, context) {
           components: dsCache.components.size,
           failedKeys: dsCache.failedKeys.size,
         },
+        // Discovery health — makes silent degradation visible at a glance.
+        // A page-scan-only source or a high removed-key ratio means component
+        // resolution is unreliable and a build will under-use (or zero-out) DS
+        // components; re-run mimic_discover_ds to refresh via REST.
+        ...((() => {
+          const componentsCached = dsCache.components.size;
+          const restComponents = dsCache.restComponentCount();
+          const removedCached = knowledgeStore.countRemovedComponentKeys(dsCache.components.keys());
+          const removedRatio = componentsCached > 0 ? +(removedCached / componentsCached).toFixed(2) : 0;
+          const source = componentsCached === 0 ? 'none' : (restComponents > 0 ? 'rest' : 'page-scan');
+          const degraded = Boolean(session.componentEnumerationDegraded) || source === 'page-scan' || removedRatio >= 0.3;
+          const notes = [];
+          if (source === 'page-scan') notes.push('Components are page-scan only (no REST enumeration) — mapping may report false gaps and a build can under-use DS components. Re-run mimic_discover_ds with a library file key / FIGMA_TOKEN.');
+          if (removedRatio >= 0.3) notes.push(`${removedCached} of ${componentsCached} cached components are flagged removed (${Math.round(removedRatio * 100)}%) — the component cache is stale. Re-run mimic_discover_ds to refresh.`);
+          return {
+            discoveryHealth: {
+              enumerationSource: source,
+              componentsCached,
+              restComponents,
+              removedCached,
+              removedRatio,
+              degraded,
+              ...(notes.length > 0 ? { notes } : {}),
+            },
+          };
+        })()),
         knowledge: knowledgeSummary,
         // Inject user-defined design rules so they're visible at build start.
         // These are persistent rules the user defined during previous builds.
@@ -270,6 +296,19 @@ function register(server, context) {
               variables: { type: 'number' },
               components: { type: 'number' },
               failedKeys: { type: 'number' },
+            },
+          },
+          discoveryHealth: {
+            type: 'object',
+            description: 'Component-enumeration health: source (rest|page-scan|none), counts, removed-key ratio, and a degraded flag with notes.',
+            properties: {
+              enumerationSource: { type: 'string' },
+              componentsCached: { type: 'number' },
+              restComponents: { type: 'number' },
+              removedCached: { type: 'number' },
+              removedRatio: { type: 'number' },
+              degraded: { type: 'boolean' },
+              notes: { type: 'array', items: { type: 'string' } },
             },
           },
           knowledge: {
@@ -1312,6 +1351,22 @@ function register(server, context) {
           + 'end up using few or no DS components. Provide a library file key / FIGMA_TOKEN, or run a '
           + 'Figma search_design_system library search, before building \u2014 a zero-component build '
           + 'fails the component-first quality gate.'
+        );
+      }
+
+      // Stale-cache guard: if a large share of the cached components are flagged
+      // removed from the live DS, the cache wasn't (or couldn't be) refreshed
+      // this session \u2014 mapping will resolve dead keys. Warn and point at a
+      // refresh instead of letting a build run on a months-old cache.
+      const removedCached = knowledgeStore.countRemovedComponentKeys(dsCache.components.keys());
+      const removedRatio = componentsCached > 0 ? removedCached / componentsCached : 0;
+      session.componentCacheStale = removedRatio >= 0.3;
+      if (session.componentCacheStale) {
+        completenessWarnings.push(
+          `Stale component cache: ${removedCached} of ${componentsCached} cached components (${Math.round(removedRatio * 100)}%) `
+          + 'are flagged removed from the live DS. The cache was not refreshed via REST this session, so '
+          + 'mimic_map_components will resolve dead keys. Re-run mimic_discover_ds (ensure a library file key '
+          + '/ FIGMA_TOKEN so REST enumeration runs) to refresh before building.'
         );
       }
 

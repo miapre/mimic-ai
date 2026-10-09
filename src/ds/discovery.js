@@ -106,13 +106,7 @@ class DsDiscovery {
    * fails to import. Lets the element fall through to the search / gap path.
    */
   _isRemovedKey(key) {
-    const components = this.knowledgeStore?.data?.components || {};
-    const isRemoved = (recipe) => Boolean(recipe && recipe.stale && recipe.staleReason === 'component_removed');
-    if (isRemoved(components[key])) return true;
-    for (const recipe of Object.values(components)) {
-      if (recipe.componentKey === key && isRemoved(recipe)) return true;
-    }
-    return false;
+    return this.knowledgeStore ? this.knowledgeStore.isComponentKeyRemoved(key) : false;
   }
 
   /**

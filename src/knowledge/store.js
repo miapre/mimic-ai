@@ -745,6 +745,31 @@ class KnowledgeStore {
     return this.data.components[name] || null;
   }
 
+  /**
+   * True when this component key is recorded as removed from the live DS.
+   * Recipes are keyed by componentKey or by name (with a componentKey field),
+   * so check both forms. Used by discovery to skip dead keys and by the
+   * stale-cache guard / status health line.
+   */
+  isComponentKeyRemoved(key) {
+    if (!key) return false;
+    const removed = (r) => Boolean(r && r.stale && r.staleReason === 'component_removed');
+    if (removed(this.data.components?.[key])) return true;
+    for (const recipe of Object.values(this.data.components || {})) {
+      if (recipe.componentKey === key && removed(recipe)) return true;
+    }
+    return false;
+  }
+
+  /** How many of the given component keys are flagged component_removed. */
+  countRemovedComponentKeys(keys) {
+    let n = 0;
+    for (const key of keys || []) {
+      if (this.isComponentKeyRemoved(key)) n++;
+    }
+    return n;
+  }
+
   /** Increment a variantStats observation count directly (helper for callers building up stats). */
   addVariantObservation(recipeKey, property, value, count = 1) {
     const recipe = this.data.components[recipeKey];

@@ -133,4 +133,32 @@ describe('KnowledgeStore', () => {
     assert.equal(store.data.gaps['tab-component'].elements.length, 1);
     assert.equal(store.data.gaps['tab-component'].status, 'open');
   });
+
+  it('isComponentKeyRemoved detects removed recipes keyed by key or by name', () => {
+    const store = new KnowledgeStore(TEST_PATH);
+    store.data.components = {
+      'live-key': { componentKey: 'live-key', names: ['Button'] },
+      'removed-key': { componentKey: 'removed-key', names: ['Card header'], stale: true, staleReason: 'component_removed' },
+      'Badge': { componentKey: 'badge-key', names: ['Badge'], stale: true, staleReason: 'component_removed' },
+      'variant-stale': { componentKey: 'vk', names: ['Input'], stale: true, staleReason: 'variants_changed' },
+    };
+    assert.equal(store.isComponentKeyRemoved('removed-key'), true, 'removed, keyed by key');
+    assert.equal(store.isComponentKeyRemoved('badge-key'), true, 'removed, matched via componentKey field');
+    assert.equal(store.isComponentKeyRemoved('live-key'), false, 'live key is not removed');
+    assert.equal(store.isComponentKeyRemoved('vk'), false, 'variants_changed is stale but NOT component_removed');
+    assert.equal(store.isComponentKeyRemoved('unknown'), false);
+    assert.equal(store.isComponentKeyRemoved(null), false);
+  });
+
+  it('countRemovedComponentKeys counts only removed keys from the given set', () => {
+    const store = new KnowledgeStore(TEST_PATH);
+    store.data.components = {
+      'r1': { componentKey: 'r1', stale: true, staleReason: 'component_removed' },
+      'r2': { componentKey: 'r2', stale: true, staleReason: 'component_removed' },
+      'live': { componentKey: 'live' },
+    };
+    assert.equal(store.countRemovedComponentKeys(['r1', 'r2', 'live', 'absent']), 2);
+    assert.equal(store.countRemovedComponentKeys([]), 0);
+    assert.equal(store.countRemovedComponentKeys(new Map([['r1', {}], ['live', {}]]).keys()), 1);
+  });
 });
