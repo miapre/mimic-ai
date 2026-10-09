@@ -330,7 +330,7 @@ function register(server, context) {
   // ── mimic_discover_ds ─────────────────────────────────────────
   registerTool(
     'mimic_discover_ds',
-    'Complete DS discovery in two steps. Step 1: call with fileKey — discovers variables, text styles, components via plugin API, caches everything, stays at Phase 1. Step 2: call again with communitySearchResults (library names from Figma MCP search_design_system) — verifies no community libraries were missed, then advances to Phase 2 (build-ready). Build tools are BLOCKED until Step 2 completes. If a community library\'s variables are not discoverable via the plugin API (communityVariablesRequired response), fetch them via Figma MCP search_design_system and pass as externalVariables.',
+    'Discover the design system. Call with fileKey — discovers variables, text styles, and components and computes the enforcement profile. With a FIGMA_TOKEN + resolvable library file key, the full library is enumerated over REST and discovery AUTO-COMPLETES to Phase 2 (build-ready); no other tool or MCP is needed (self-contained). Only when REST cannot enumerate the library does it stay at Phase 1 with communityLibraryCheckRequired + a _howToComplete block: the preferred fix is to supply a library file key + FIGMA_TOKEN so REST runs; search_design_system is an OPTIONAL fallback for community libraries REST cannot read and is NOT part of the official Figma MCP. Always check completenessWarnings + discoveryHealth. If a community library\'s variables are not plugin-discoverable (communityVariablesRequired), supply them via externalVariables.',
     {
       type: 'object',
       properties: {

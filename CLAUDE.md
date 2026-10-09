@@ -46,9 +46,13 @@ for truly custom layouts that have no DS equivalent — and even
 then, bind every property to DS variables and text styles.
 
 After `mimic_discover_ds`, ALWAYS call `mimic_map_components`
-with all section-level elements in the design. For any missing
-components, search the library via Figma MCP
-`search_design_system` before building custom frames.
+with all section-level elements in the design. With a
+FIGMA_TOKEN this one call is authoritative: REST has already
+enumerated the whole library, so anything it reports missing is
+a real gap — build those as primitives. An external Figma MCP is
+NOT required; `search_design_system` is not part of Figma's
+official MCP and is only an optional fallback for community
+libraries REST cannot read (see Discovery below).
 
 ## Build Protocol
 
@@ -59,81 +63,75 @@ Every build follows 6 phases in order:
 Call `mimic_status` to start. It returns the current state
 and what to do next.
 
-## Phase 1+2 — DS Discovery (TWO CALLS)
+## Phase 1+2 — DS Discovery
 
-Discovery is a two-step process that ensures community
-libraries are never missed:
-
-**Step 1 — Plugin discovery:**
 ```
 mimic_discover_ds(fileKey)
 ```
-Discovers variables, text styles, and components via the
-Figma plugin API. Caches everything and computes enforcement
-profile. Stays at Phase 1 (NOT build-ready yet).
+Discovers variables, text styles, and components and computes
+the enforcement profile. **Mimic is self-contained:** with a
+FIGMA_TOKEN and a resolvable library file key (prompted once,
+then cached, or auto-derived from a component already on the
+page) it enumerates the full component/style library over
+Figma's REST API and **auto-completes to Phase 2 (build-ready)**
+— no other tool or MCP required. The response carries
+`_communityCheckSkipped` when this REST-authoritative path is
+taken.
 
-The response includes `communityLibraryCheckRequired: true`
-and `_stopBuild: true`. Build tools are blocked at Phase 1.
+If multiple DS libraries are detected, discovery STOPS with
+`_userPrompt`. Present it EXACTLY as written, wait for the
+user's pick, then re-call with `libraryKey`.
 
-If multiple DS libraries are detected by the plugin, discovery
-STOPS with `_userPrompt`. Present the prompt to the user
-EXACTLY as written, wait for their pick, then re-call with
-`libraryKey`.
-
-**Step 2 — Community library check:**
-Call Figma MCP `search_design_system` with query `"color"`,
-`includeVariables: true, includeComponents: false,
-includeStyles: false` on the fileKey. Collect all unique
-non-null `libraryName` values AND one sample variable `key`
-per library from the results. Then:
+**If REST cannot enumerate the library** (no FIGMA_TOKEN, no
+resolvable library file key, or a community library the REST API
+can't read), discovery stays at Phase 1 and returns
+`communityLibraryCheckRequired: true` with a `_howToComplete`
+block. The PREFERRED resolution is to supply a library file key
++ FIGMA_TOKEN so REST enumeration runs and discovery completes —
+NOT to reach for another MCP. `search_design_system` is only an
+OPTIONAL fallback for genuine community libraries REST can't
+read, and it is **not part of Figma's official MCP** — if no
+tool exposes it in this environment, use the REST path and do
+not block waiting on it. When it IS available, re-call:
 ```
 mimic_discover_ds(fileKey, {
-  communitySearchResults: ["LibraryA", "LibraryB", ...],
-  communitySearchVariableKeys: {
-    "LibraryA": "first-variable-key-from-results",
-    "LibraryB": "first-variable-key-from-results"
-  }
+  communitySearchResults: ["LibraryA", ...],
+  communitySearchVariableKeys: { "LibraryA": "a-variable-key" }
 })
 ```
-The tool validates which libraries are actually enabled in
-the file (filters out phantom libraries from search). If
-multiple real libraries remain, it returns a `_userPrompt`
-with a lettered list. If only one, it auto-selects.
 
-This check is **enforced by the tool** — build tools require
-Phase 2, which only unlocks after community verification.
-
-Check `completenessWarnings` in the response. If components
-were not found on the page, use Figma MCP
-`search_design_system` to find them by name.
+Always check `completenessWarnings` and `discoveryHealth` in the
+response — they flag page-scan-only enumeration or a stale
+component cache, so a degraded discovery is never silent.
 
 After discovery, call `mimic_map_components` with the HTML
 element types to get the exact component keys for the build.
 
 **Component mapping workflow:**
 
-**With FIGMA_TOKEN (recommended):** One call is enough.
-REST API discovery caches ALL library components, so
+**With FIGMA_TOKEN (the normal, self-contained path):** one
+call is enough. REST discovery cached the whole library, so
 `mimic_map_components({ elementTypes })` returns found
-components + confirmed gaps immediately. Missing types
-are real gaps — proceed to build with primitives.
+components + confirmed gaps immediately. Missing types are real
+gaps — build them as primitives. No external search needed.
 
-**Without FIGMA_TOKEN (fallback — two calls):**
-1. `mimic_map_components({ elementTypes })` — returns
-   found + missing with search terms.
-2. Search via Figma MCP `search_design_system`. One
-   search per missing type.
-3. `mimic_map_components({ elementTypes,
-   librarySearchResults })` — confirms gaps.
+**Only if REST could not enumerate the library** (a community
+library the API can't read): `mimic_map_components` returns
+`searchComplete: false`. If — and only if — a Figma MCP exposing
+`search_design_system` is installed, search once per missing
+type and re-call with `librarySearchResults` to confirm gaps.
+`search_design_system` is NOT part of the official Figma MCP; if
+it isn't available, the fix is to enable the DS library on the
+file so the plugin/REST can read it — not to install a mystery
+MCP.
 
 **Community libraries (no file key available):**
 If the selected library is a community file and the user
 can't provide the library file key, re-call
 `mimic_discover_ds` with `skipRestApi: true`. Discovery
 proceeds with plugin-only data (variables + page-scan
-components). Use Figma MCP `search_design_system` +
-`mimic_map_components` two-call workflow to find
-components.
+components). Use the optional `search_design_system` fallback
+above only if such a tool is present.
 
 After mapping, missing types are **confirmed gaps** —
 build as primitives with `confirmedNoComponent: true`.
@@ -258,11 +256,12 @@ replaces the whole manual sequence.
     "Frame". "Card: Total Users" not "Frame". This enables
     iteration — finding nodes by name instead of traversing.
 16. Section-level elements (header, footer, sidebar) should use
-    DS components if they exist. The two-call `mimic_map_components`
-    workflow handles this: first call identifies gaps, you search
-    once via Figma MCP, second call with `librarySearchResults`
-    confirms matches or gaps. After the second call, any remaining
-    missing types are confirmed — build as primitives.
+    DS components if they exist. With a FIGMA_TOKEN, one
+    `mimic_map_components` call is authoritative — REST already
+    enumerated the library, so anything it reports missing is a
+    confirmed gap; build those as primitives. (Only a community
+    library REST can't read needs the optional `search_design_system`
+    fallback + a second `librarySearchResults` call — see Discovery.)
 17. When `mimic_map_components` returns a component for header,
     footer, or sidebar — use it. The DS component is the
     authoritative layout. Override text content to match the
@@ -508,7 +507,11 @@ The Figma plugin API (`getAvailableLibraryVariableCollections`)
 cannot enumerate variables from some community libraries, even
 when they are enabled and visible in Manage Libraries. When this
 happens, `mimic_discover_ds` returns `communityVariablesRequired:
-true` instead of the mismatch prompt. The fix:
+true` instead of the mismatch prompt. This is the one narrow case
+that needs an external search tool — and only if one is present
+(`search_design_system` is not part of the official Figma MCP;
+with no such tool, use a first-party DS library the plugin/REST
+can read). The fix when the tool IS available:
 
 1. Search for the library's variables via Figma MCP
    `search_design_system` with `includeLibraryKeys` to filter
