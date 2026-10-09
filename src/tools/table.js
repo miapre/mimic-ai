@@ -18,6 +18,66 @@
 // individually, avoiding the accumulated timeout pressure.
 const { SequentialSender } = require('../utils/batch-collector');
 
+// ── DS-agnostic cell resolution ────────────────────────────────────────────
+// The bulk builder must not assume Untitled-UI conventions (a variant property
+// literally named "Style", a text node literally named "Text"). Different DS
+// Table-cell components name these differently, and the cell's text nodes
+// change with its variant. These helpers read the component's real variant
+// schema (from the insert response) and the cell's real text nodes (after the
+// variant is applied) so content lands in the right place. They degrade to the
+// legacy names when no schema/children data is available (keeps older DS and
+// unit mocks working).
+
+// insert_component responses carry textNodes/variantProperties either at the
+// top level (raw plugin) or under configurationHints (MCP-wrapped). Read both.
+function pickField(result, field) {
+  if (!result) return undefined;
+  if (result[field] !== undefined) return result[field];
+  if (result.configurationHints && result.configurationHints[field] !== undefined) return result.configurationHints[field];
+  return undefined;
+}
+function insertTextNodes(result) {
+  const t = pickField(result, 'textNodes');
+  return Array.isArray(t) ? t.map(n => ({ id: n.nodeId || n.id, name: n.name })) : [];
+}
+function insertVariantProps(result) {
+  const v = pickField(result, 'variantProperties');
+  return (v && typeof v === 'object') ? v : {};
+}
+// Find the variant property + exact-cased value that owns a requested style
+// (case-insensitive), scanning ALL variant properties — don't assume "Style".
+function resolveStyleVariant(variantProps, requested) {
+  if (!requested || !variantProps) return null;
+  const want = String(requested).trim().toLowerCase();
+  for (const prop of Object.keys(variantProps)) {
+    const meta = variantProps[prop];
+    const values = (meta && Array.isArray(meta.values)) ? meta.values : [];
+    for (const v of values) {
+      if (String(v).trim().toLowerCase() === want) return { prop, value: v };
+    }
+  }
+  return null;
+}
+function findPropName(variantProps, re) {
+  if (!variantProps) return null;
+  return Object.keys(variantProps).find(p => re.test(p)) || null;
+}
+// Collect visible TEXT nodes in document order from a get_node_children tree.
+function collectTextNodes(children, out) {
+  if (!Array.isArray(children)) return out;
+  for (const c of children) {
+    if (c.type === 'TEXT' && c.visible !== false) out.push({ id: c.id, name: c.name });
+    if (Array.isArray(c.children)) collectTextNodes(c.children, out);
+  }
+  return out;
+}
+async function readVisibleTextNodes(bridge, nodeId) {
+  try {
+    const res = await bridge.send('get_node_children', { nodeId, depth: 6 });
+    return collectTextNodes(res && res.children, []);
+  } catch { return []; }
+}
+
 function register(server, context) {
   const { bridge, dsCache, session, requirePhase, advancePhase, registerTool, knowledgeStore } = context;
 
@@ -231,10 +291,12 @@ function register(server, context) {
             // Configure header: set text, disable checkbox, FILL width
             const headerOps = [];
 
-            // Set header text
+            // Set header text — use the header cell's real primary text node
+            // name (not a hardcoded "Text"); fall back to "Text" when unknown.
+            const headerTextName = (insertTextNodes(headerResult)[0] || {}).name || 'Text';
             headerOps.push(collector.send('set_component_text', {
               nodeId: headerResult.nodeId,
-              textNodeName: 'Text',
+              textNodeName: headerTextName,
               content: col.header,
             }));
 
@@ -291,64 +353,77 @@ function register(server, context) {
             results.totalOperations++;
 
             if (cellResult?.nodeId) {
-              const cellOps = [];
+              const vprops = insertVariantProps(cellResult);
+              const hasSchema = Object.keys(vprops).length > 0;
 
-              // Set variant: Supporting text first (must be set before Style
-              // to avoid invalid variant combinations)
-              cellOps.push(collector.send('set_variant', {
-                nodeId: cellResult.nodeId,
-                properties: { 'Supporting text': hasSupportingText ? 'True' : 'False' },
-              }));
-
-              await Promise.all(cellOps);
-              results.totalOperations++;
-
-              // Now set Style (after Supporting text is resolved)
-              const styleOps = [];
-              try {
-                await collector.send('set_variant', {
-                  nodeId: cellResult.nodeId,
-                  properties: { Style: col.style },
-                });
-                results.totalOperations++;
-              } catch (styleErr) {
-                // Style variant might not be valid — fall back to default
-                results.failures.push({
-                  column: col.header,
-                  row: rowIdx,
-                  phase: 'style',
-                  error: `Style "${col.style}" failed: ${styleErr.message}. Cell left at default style.`,
-                });
-              }
-
-              // Set text content
-              try {
-                await collector.send('set_component_text', {
-                  nodeId: cellResult.nodeId,
-                  textNodeName: 'Text',
-                  content: text,
-                });
-                results.totalOperations++;
-              } catch (textErr) {
-                // Text node name might differ per style variant — try fallback
-                results.failures.push({
-                  column: col.header,
-                  row: rowIdx,
-                  phase: 'text',
-                  error: textErr.message,
-                });
-              }
-
-              // Set supporting text if applicable
-              if (hasSupportingText) {
+              // Supporting-text variant — discover the real property name
+              // (don't assume "Supporting text"); legacy fallback when no schema.
+              const supProp = findPropName(vprops, /supporting[\s-]*text/i) || (hasSchema ? null : 'Supporting text');
+              if (supProp) {
                 try {
-                  await collector.send('set_component_text', {
+                  await collector.send('set_variant', {
                     nodeId: cellResult.nodeId,
-                    textNodeName: 'Supporting text',
-                    content: supportingText,
+                    properties: { [supProp]: hasSupportingText ? 'True' : 'False' },
                   });
                   results.totalOperations++;
-                } catch { /* supporting text node may not exist in this style */ }
+                } catch { /* supporting-text property not settable here */ }
+              }
+
+              // Style variant — find WHICH variant property owns the requested
+              // style value instead of assuming a property named "Style".
+              const styleMatch = resolveStyleVariant(vprops, col.style);
+              if (styleMatch) {
+                try {
+                  await collector.send('set_variant', {
+                    nodeId: cellResult.nodeId,
+                    properties: { [styleMatch.prop]: styleMatch.value },
+                  });
+                  results.totalOperations++;
+                } catch (styleErr) {
+                  results.failures.push({ column: col.header, row: rowIdx, phase: 'style', error: styleErr.message });
+                }
+              } else if (!hasSchema) {
+                // Legacy fallback: no variant schema available (older DS / mocks).
+                try {
+                  await collector.send('set_variant', { nodeId: cellResult.nodeId, properties: { Style: col.style } });
+                  results.totalOperations++;
+                } catch { /* ignore */ }
+              } else {
+                const available = Object.keys(vprops)
+                  .map(p => `${p}: [${((vprops[p] && vprops[p].values) || []).join(', ')}]`).join('; ');
+                results.failures.push({
+                  column: col.header, row: rowIdx, phase: 'style',
+                  error: `Style "${col.style}" is not a valid variant value for this DS's Table cell (available — ${available}). Cell left at default; text still applied to its primary text node.`,
+                });
+              }
+
+              // Resolve the cell's REAL text nodes AFTER the variant is applied
+              // (the variant can swap the inner content), then set content by
+              // the actual node name — never a hardcoded "Text".
+              let cellTextNodes = await readVisibleTextNodes(bridge, cellResult.nodeId);
+              if (cellTextNodes.length === 0) cellTextNodes = insertTextNodes(cellResult);
+              const primary = cellTextNodes[0];
+              if (primary && primary.name) {
+                try {
+                  await collector.send('set_component_text', {
+                    nodeId: cellResult.nodeId, textNodeName: primary.name, content: text,
+                  });
+                  results.totalOperations++;
+                } catch (textErr) {
+                  results.failures.push({ column: col.header, row: rowIdx, phase: 'text', error: textErr.message });
+                }
+              } else {
+                results.failures.push({ column: col.header, row: rowIdx, phase: 'text', error: 'No text node found in cell after variant configuration.' });
+              }
+
+              // Supporting text → the second text node, if present.
+              if (hasSupportingText && cellTextNodes[1] && cellTextNodes[1].name) {
+                try {
+                  await collector.send('set_component_text', {
+                    nodeId: cellResult.nodeId, textNodeName: cellTextNodes[1].name, content: supportingText,
+                  });
+                  results.totalOperations++;
+                } catch { /* supporting text node not settable */ }
               }
 
               // Defer cellVariants — need real nodeIds from get_node_children.
@@ -486,4 +561,8 @@ function register(server, context) {
   );
 }
 
-module.exports = { register };
+module.exports = {
+  register,
+  // exported for unit testing
+  _internal: { insertTextNodes, insertVariantProps, resolveStyleVariant, findPropName, collectTextNodes },
+};
